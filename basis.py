@@ -1,6 +1,6 @@
 # basis.py
 from __future__ import annotations
-from datetime import date, timedelta
+from datetime import date
 import calendar
 
 QUARTER_MONTHS = [3, 6, 9, 12]
@@ -54,6 +54,9 @@ def classify_contract(
     except ValueError:
         return None, None
 
+    if not (1 <= mm <= 12):
+        return None, None
+
     year = 2000 + yy
     expire = third_friday(year, mm)
 
@@ -68,19 +71,22 @@ def classify_contract(
     if contract_yyyymm == today_yyyymm + 1:
         return "下月", expire
 
-    # 当季/下季：找出从今天起未来 4 个季月（3/6/9/12）
+    # 当季/下季：从"下个月"起找未来季月（确保不与当月/下月重复）
     future_quarters = []
     y, m = today.year, today.month
+    m += 1  # 从下个月开始
+    if m > 12:
+        m = 1
+        y += 1
     while len(future_quarters) < 4:
-        if m in QUARTER_MONTHS and (y * 12 + m) >= today_yyyymm:
+        if m in QUARTER_MONTHS:
             future_quarters.append((y, m))
         m += 1
         if m > 12:
             m = 1
             y += 1
 
-    # future_quarters[0] = 当季（第一个 >= today 的季月）
-    # future_quarters[1] = 下季
+    # future_quarters[0] = 当季, [1] = 下季
     for i, label in [(0, "当季"), (1, "下季")]:
         if i < len(future_quarters):
             qy, qm = future_quarters[i]
