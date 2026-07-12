@@ -85,7 +85,9 @@ class TestContractCRUD(unittest.TestCase):
         os.unlink(self.path)
 
     def test_upsert_and_query_by_date(self):
-        for sym, ctype in [("IM2607", "当月"), ("IM2608", "下月")]:
+        """query_contracts_by_date 排除 IM0（主力连续）"""
+        # 插入 2 个普通合约 + 1 个主力连续
+        for sym, ctype in [("IM2607", "当月"), ("IM2608", "下月"), ("IM0", "主力")]:
             upsert_contract(self.conn, {
                 "date": "2026-07-10", "symbol": sym, "name": f"中证1000 {sym[-2:]}",
                 "contract_type": ctype, "close": 8150.0, "settle": 8145.0,
@@ -95,7 +97,10 @@ class TestContractCRUD(unittest.TestCase):
                 "fetched_at": "2026-07-12T10:00:00",
             })
         rows = query_contracts_by_date(self.conn, "2026-07-10")
+        # 只返回 2 个（排除 IM0）
         self.assertEqual(len(rows), 2)
+        symbols = [r["symbol"] for r in rows]
+        self.assertNotIn("IM0", symbols)
 
     def test_main_continuous_history(self):
         """主力连续合约 symbol='IM0' 单独查询"""
@@ -137,6 +142,25 @@ class TestSignalCRUD(unittest.TestCase):
         })
         self.assertEqual(sid1, 1)
         self.assertEqual(sid2, 2)
+
+    def test_query_latest_signals_filters_by_date(self):
+        """query_latest_signals 按 date 倒序返回，cutoff 日期过滤"""
+        from db import query_latest_signals
+        # 插入 3 个信号，日期不同
+        for d, stype in [("2026-06-01", "wait"), ("2026-07-01", "warn_entry"), ("2026-07-10", "entry")]:
+            insert_signal(self.conn, {
+                "date": d, "signal_type": stype,
+                "condition": "test", "current_value": "test",
+                "threshold": "test", "suggestion": "test",
+                "created_at": "2026-07-12T10:00:00",
+            })
+        # query_latest_signals 默认 days=30，cutoff = now - 30 days
+        # 由于测试数据是 2026-06/07，需要用足够大的 days 才能查到
+        sigs = query_latest_signals(self.conn, days=365)
+        # 应返回全部 3 个，按 date DESC 排序
+        self.assertEqual(len(sigs), 3)
+        self.assertEqual(sigs[0]["date"], "2026-07-10")  # 最新在前
+        self.assertEqual(sigs[0]["signal_type"], "entry")
 
 
 if __name__ == "__main__":
