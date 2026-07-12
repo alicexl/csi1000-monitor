@@ -13,6 +13,20 @@
 | 合约切换 | 当月剩余天数 <7 天 |
 | 卖 Call 增厚 | 持仓时卖 10% OTM 当月 call，额外收权利金 |
 
+## 安装
+
+```bash
+git clone https://github.com/alicexl/csi1000-monitor.git
+cd csi1000-monitor
+pip install akshare pandas pyyaml
+```
+
+可选：安装 Claude Code skill（在 Claude Code 中说"跑下贴水监控"即可自动执行）：
+
+```bash
+cp csi1000.skill.md ~/.claude/commands/csi1000.md
+```
+
 ## 快速开始
 
 ```bash
