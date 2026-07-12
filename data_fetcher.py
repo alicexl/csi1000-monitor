@@ -58,7 +58,7 @@ def fetch_valuation() -> list[dict]:
     })
     pb_df = pb_raw.rename(columns={
         "日期": "date", "指数": "close", "市净率": "pb",
-        "加权市净率": "pb_w", "市净率中位数": "pb_med",
+        "等权市净率": "pb_w", "市净率中位数": "pb_med",
     })
 
     merged = pe_df.merge(pb_df[["date", "pb", "pb_med", "pb_w"]], on="date", how="inner")
