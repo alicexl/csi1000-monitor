@@ -42,7 +42,7 @@ def make_metrics():
 
 class TestFormatSignals(unittest.TestCase):
     def test_empty_state_wait(self):
-        sigs = [Signal("wait", 5, "PE高", {}, {}, "等")]
+        sigs = [Signal("wait", 5, "PE高", {}, {}, "继续等待")]
         out = format_signals_section(sigs, "empty")
         self.assertIn("wait", out)
         self.assertIn("继续等待", out)

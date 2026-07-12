@@ -17,10 +17,7 @@ def format_signals_section(signals: list[Signal], state: str) -> str:
     lines = []
     for s in signals:
         star = "★" if s.priority <= 3 else "·"
-        suggestion = s.suggestion
-        if state == "empty" and s.type == "wait":
-            suggestion = "继续等待"
-        lines.append(f"> **{star} {s.type}** — {s.condition}\n> {suggestion}")
+        lines.append(f"> **{star} {s.type}** — {s.condition}\n> {s.suggestion}")
     return "\n".join(lines)
 
 
