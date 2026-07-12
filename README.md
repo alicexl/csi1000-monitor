@@ -30,9 +30,6 @@ cp csi1000.skill.md ~/.claude/commands/csi1000.md
 ## 快速开始
 
 ```bash
-# 安装依赖
-pip install akshare pandas pyyaml
-
 # 首次：拉数据入库（约 30-60 秒）
 python monitor.py scan
 
@@ -86,14 +83,7 @@ pct_windows:
 
 ## Claude Code Skill（可选）
 
-本项目附带 Claude Code skill 文件 `csi1000.skill.md`。安装后在 Claude Code 中说"跑下贴水监控"即可自动执行。
-
-```bash
-# 复制到 Claude commands 目录
-cp csi1000.skill.md ~/.claude/commands/csi1000.md
-```
-
-安装后触发词：`csi1000` / `贴水监控` / `中证1000`。
+本项目附带 Claude Code skill 文件 `csi1000.skill.md`（安装方式见上方「安装」章节）。安装后在 Claude Code 中说"跑下贴水监控"即可自动执行，触发词：`csi1000` / `贴水监控` / `中证1000`。
 
 ## 运行频率建议
 
