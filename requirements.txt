@@ -1,0 +1,3 @@
+akshare>=1.18.64
+pandas
+pyyaml>=6.0
