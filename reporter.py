@@ -67,6 +67,27 @@ def _box_table(metrics: dict) -> str:
     )
 
 
+def _option_table(opt: dict) -> str:
+    """卖 call 增厚分析表。"""
+    lines = [
+        f"合约: {opt['symbol']}  执行价: {opt['strike']:.0f}  "
+        f"OTM: {opt['otm_pct']:.1f}%  剩余: {opt['days_to_expire']}天  "
+        f"到期: {opt['expire_date']}",
+        "",
+        f"| 权利金(点) | 权利金(元/张) | IV | 年化增厚(名义) | 行权概率 | 盈亏平衡 | 持仓量 |",
+        f"|---|---|---|---|---|---|---|",
+        f"| {opt['premium_points']:.1f} | {opt['premium_yuan']:.0f} | "
+        f"{opt['iv']:.1f}% | **{opt['enhancement_nominal']:.1f}%** | "
+        f"{opt['assign_prob']:.1f}% | {opt['breakeven']:.0f} | "
+        f"{opt['oi']:.0f} |",
+    ]
+    if opt.get("implied_discount") is not None:
+        lines.append("")
+        lines.append(f"期权隐含远期: {opt['implied_forward']:.0f}  "
+                     f"隐含贴水: {opt['implied_discount']:.2f}%")
+    return "\n".join(lines)
+
+
 def generate_report(
     report_date: str,
     config: Config,
@@ -107,6 +128,12 @@ def generate_report(
     main_pct = metrics.get("main_continuous_discount_pct")
     if main_pct is not None:
         lines.append(f"主力连续贴水分位：{main_pct:.1f}%（近2年）")
+        lines.append("")
+
+    opt = metrics.get("otm_call")
+    if opt:
+        lines.append("## 卖 Call 增厚分析（10% OTM）")
+        lines.append(_option_table(opt))
         lines.append("")
 
     lines.append("## 估值箱体")

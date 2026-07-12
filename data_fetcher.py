@@ -8,7 +8,11 @@ import akshare as ak
 
 from basis import (
     classify_contract, days_to_expire, compute_basis,
-    compute_annualized_discount,
+    compute_annualized_discount, third_friday,
+)
+from options import (
+    implied_vol, annualized_enhancement, prob_above_strike,
+    implied_forward,
 )
 
 
@@ -147,3 +151,90 @@ def fetch_daily_contracts(today: date, spot_close: float) -> list[dict]:
         except (ValueError, TypeError, KeyError):
             continue
     return rows
+
+
+def _pick_option_month(today: date, switch_days: int = 7) -> tuple[str, date]:
+    """选卖 call 用的期权合约月份。当月剩余 < switch_days 时用下月。"""
+    expire_cur = third_friday(today.year, today.month)
+    if (expire_cur - today).days >= switch_days:
+        mo_sym = f"MO{today.year % 100:02d}{today.month:02d}"
+        return mo_sym, expire_cur
+    yy, mm = today.year, today.month
+    if mm == 12:
+        yy, mm = yy + 1, 1
+    else:
+        mm += 1
+    expire_next = third_friday(yy, mm)
+    mo_sym = f"MO{yy % 100:02d}{mm:02d}"
+    return mo_sym, expire_next
+
+
+def fetch_otm_call(
+    spot: float, today: date, otm_pct: float = 10.0, switch_days: int = 7
+) -> dict | None:
+    """拉当月/下月中证1000股指期权 → 选 OTM% 最近的 call → 算 IV/增厚率/行权概率。
+
+    返回 None 表示拉取失败（周末/网络/接口异常），不阻断主流程。
+    """
+    mo_symbol, expire = _pick_option_month(today, switch_days)
+    df = retry(lambda: ak.option_cffex_zz1000_spot_sina(symbol=mo_symbol), retries=2)
+    if df is None or df.empty:
+        return None
+
+    target_strike = spot * (1 + otm_pct / 100.0)
+    best = None
+    best_diff = 1e9
+    for _, r in df.iterrows():
+        try:
+            k = float(r.iloc[7])  # 行权价
+            diff = abs(k - target_strike)
+            if diff < best_diff:
+                cl = r.iloc[2]  # call 最新价
+                cs = r.iloc[3]  # call 卖价
+                pl = r.iloc[11]  # put 最新价
+                if str(cl) in ("-", "", "None") or str(cs) in ("-", "", "None"):
+                    continue
+                best_diff = diff
+                best = {
+                    "symbol": mo_symbol,
+                    "strike": k,
+                    "call_last": float(cl),
+                    "call_sell": float(cs),
+                    "put_last": float(pl) if str(pl) not in ("-", "", "None") else None,
+                    "oi": float(r.iloc[5]) if str(r.iloc[5]) not in ("-", "", "None") else 0,
+                }
+        except (ValueError, TypeError, IndexError):
+            continue
+    if best is None:
+        return None
+
+    premium = best["call_sell"]
+    days = (expire - today).days
+    T = days / 365.0
+    iv = implied_vol(premium, spot, best["strike"], T)
+    otm = (best["strike"] - spot) / spot * 100
+    prob = prob_above_strike(spot, best["strike"], T, iv) if iv > 0 else 0
+    enh_nominal = annualized_enhancement(premium, spot, days)
+    fwd = None
+    disc_implied = None
+    if best["put_last"] and best["put_last"] > 0:
+        fwd = implied_forward(premium, best["put_last"], best["strike"], T)
+        disc_implied = (spot - fwd) / spot * 100
+
+    return {
+        "symbol": best["symbol"],
+        "strike": best["strike"],
+        "otm_pct": otm,
+        "premium_points": premium,
+        "premium_yuan": premium * 200,
+        "iv": iv * 100,
+        "days_to_expire": days,
+        "expire_date": expire.isoformat(),
+        "assign_prob": prob * 100,
+        "breakeven": best["strike"] + premium,
+        "enhancement_nominal": enh_nominal,
+        "oi": best["oi"],
+        "implied_forward": fwd,
+        "implied_discount": disc_implied,
+        "fetched_at": datetime.now().isoformat(timespec="seconds"),
+    }

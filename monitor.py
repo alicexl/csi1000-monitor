@@ -12,7 +12,7 @@ from db import (
     query_contracts_by_date, query_main_continuous_history,
     query_latest_signals,
 )
-from data_fetcher import fetch_valuation, fetch_main_continuous, fetch_daily_contracts
+from data_fetcher import fetch_valuation, fetch_main_continuous, fetch_daily_contracts, fetch_otm_call
 from valuation import compute_pct_for_windows, pe_pb_divergence
 from signals import evaluate
 from reporter import generate_report, render_status_line
@@ -102,7 +102,7 @@ def _build_metrics(conn, cfg: Config) -> dict:
     else:
         main_pct = None
 
-    return {
+    metrics = {
         "date": latest["date"],
         "close": close,
         "pe_ttm": pe_ttm,
@@ -118,6 +118,15 @@ def _build_metrics(conn, cfg: Config) -> dict:
         "contracts": contracts,
         "main_continuous_discount_pct": main_pct,
     }
+
+    # 期权增厚分析（实时拉取，失败不阻断）
+    try:
+        metrics["otm_call"] = fetch_otm_call(
+            close, date.today(), otm_pct=10.0,
+            switch_days=cfg.thresholds.switch_days)
+    except Exception:
+        metrics["otm_call"] = None
+    return metrics
 
 
 def cmd_report(args) -> int:
