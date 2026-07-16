@@ -120,10 +120,11 @@ def query_latest_valuation(conn: sqlite3.Connection) -> dict[str, Any] | None:
 
 
 def query_valuation_history(conn: sqlite3.Connection, days: int = 3650) -> list[dict[str, Any]]:
-    cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+    """返回历史估值行（按日期升序）。days 是行数上限，非天数；
+    估值分位的天数窗口由 valuation.compute_pct_for_windows 自行过滤。
+    """
     cur = conn.execute(
-        "SELECT * FROM daily_valuation WHERE date >= ? "
-        "ORDER BY date DESC LIMIT ?", (cutoff, days))
+        "SELECT * FROM daily_valuation ORDER BY date DESC LIMIT ?", (days,))
     rows = cur.fetchall()
     return [dict(r) for r in reversed(rows)]  # 按日期升序返回
 
