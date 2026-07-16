@@ -3,14 +3,13 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from config import Config, load_config, default_config_template
 from db import (
     init_db, upsert_valuation, upsert_contract, insert_signal,
     query_latest_valuation, query_valuation_history,
     query_contracts_by_date, query_main_continuous_history,
-    query_latest_signals,
 )
 from data_fetcher import fetch_valuation, fetch_main_continuous, fetch_daily_contracts, fetch_otm_call
 from valuation import compute_pct_for_windows, pe_pb_divergence
@@ -18,25 +17,51 @@ from signals import evaluate
 from reporter import generate_report, render_status_line
 
 ROOT = Path(__file__).parent
-DEFAULT_DB = ROOT / "csi1000_monitor.db"
-DEFAULT_CONFIG = ROOT / "config.yaml"
+DB_PATH = ROOT / "csi1000_monitor.db"
+CONFIG_PATH = ROOT / "config.yaml"
 REPORTS_DIR = ROOT / "reports"
 
 
-def _ensure_config(path: Path) -> Config:
+def _ensure_config() -> Config:
     """配置文件不存在则从模板生成。"""
-    if not path.exists():
-        path.write_text(default_config_template(), encoding="utf-8")
-        print(f"[INFO] 已生成默认配置: {path}", file=sys.stderr)
+    if not CONFIG_PATH.exists():
+        CONFIG_PATH.write_text(default_config_template(), encoding="utf-8")
+        print(f"[INFO] 已生成默认配置: {CONFIG_PATH}", file=sys.stderr)
         print(f"[INFO] 请按需编辑后重新运行", file=sys.stderr)
-    return load_config(path)
+    return load_config(CONFIG_PATH)
+
+
+def _resolve_trade_date(explicit: date | None, spot_close: float,
+                        max_lookback: int = 7) -> tuple[date, list[dict]]:
+    """返回 (交易日, 当日合约列表)。explicit 优先，否则从今天起向前回退最多 max_lookback 天。
+
+    CFFEX 当日数据通常要下午 3 点后才发布；凌晨/早盘跑 scan 时自动用上一交易日。
+    顺带把合约数据带回，避免 cmd_scan 二次拉取。
+    """
+    candidates = [explicit] if explicit else \
+        [date.today() - timedelta(days=i) for i in range(max_lookback + 1)]
+    for d in candidates:
+        contracts = fetch_daily_contracts(d, spot_close)
+        if contracts:
+            return d, contracts
+    return (explicit or date.today(), [])
+
+
+def _extract_signal_metrics(metrics: dict) -> dict:
+    """从 metrics 抽出 signals.evaluate 需要的指标 dict。"""
+    contracts = metrics.get("contracts", [])
+    cur_month = next(
+        (c for c in contracts if c["contract_type"] == "当月"), None)
+    return {
+        "pe_ttm_pct_10y": metrics["pe_ttm_pct"].get("10y", 100),
+        "current_month_discount": cur_month["annualized_discount"] if cur_month else 0,
+        "current_month_days": cur_month["days_to_expire"] if cur_month else 999,
+    }
 
 
 def cmd_scan(args) -> int:
-    cfg = _ensure_config(Path(args.config))
-    db_path = Path(args.db)
-    conn = init_db(db_path)
-    today = date.today()
+    cfg = _ensure_config()
+    conn = init_db(DB_PATH)
 
     # 1. 拉估值
     print("[1/3] 拉取 PE/PB 历史...", flush=True)
@@ -54,6 +79,22 @@ def cmd_scan(args) -> int:
         return 1
     spot_close = latest["close"]
 
+    explicit = getattr(args, "date", None)
+    if explicit:
+        try:
+            explicit = datetime.strptime(explicit, "%Y-%m-%d").date()
+        except ValueError:
+            print(f"[ERR] --date 格式应为 YYYY-MM-DD，收到: {explicit}",
+                  file=sys.stderr)
+            return 1
+
+    today, cached_contracts = _resolve_trade_date(explicit, spot_close)
+    if explicit and explicit != today:
+        print(f"[WARN] {explicit} 无 IM 合约数据，回退到 {today}",
+              file=sys.stderr)
+    elif not explicit and today != date.today():
+        print(f"[INFO] 今日 CFFEX 数据未发布，使用 {today}", file=sys.stderr)
+
     print("[2/3] 拉取主力连续 IM0...", flush=True)
     main_rows = fetch_main_continuous(spot_close, today)
     new_main = 0
@@ -62,14 +103,13 @@ def cmd_scan(args) -> int:
             new_main += 1
     print(f"      OK {len(main_rows)} 行，新增 {new_main}", flush=True)
 
-    # 3. 拉当日 IM 合约
-    print("[3/3] 拉取当日 IM 合约...", flush=True)
-    contract_rows = fetch_daily_contracts(today, spot_close)
+    # 3. 入库当日 IM 合约（复用 _resolve_trade_date 的结果）
+    print(f"[3/3] 入库 IM 合约（{today}）...", flush=True)
     new_ct = 0
-    for r in contract_rows:
+    for r in cached_contracts:
         if upsert_contract(conn, r):
             new_ct += 1
-    print(f"      OK {len(contract_rows)} 合约，新增 {new_ct}", flush=True)
+    print(f"      OK {len(cached_contracts)} 合约，新增 {new_ct}", flush=True)
 
     conn.close()
     return 0
@@ -130,25 +170,14 @@ def _build_metrics(conn, cfg: Config) -> dict:
 
 
 def cmd_report(args) -> int:
-    cfg = _ensure_config(Path(args.config))
-    conn = init_db(Path(args.db))
+    cfg = _ensure_config()
+    conn = init_db(DB_PATH)
     metrics = _build_metrics(conn, cfg)
     if not metrics:
         print("[ERR] DB 无数据，请先运行 scan", file=sys.stderr)
         return 1
 
-    # 信号评估
-    cur_month = next(
-        (c for c in metrics["contracts"] if c["contract_type"] == "当月"), None)
-    cur_month_disc = cur_month["annualized_discount"] if cur_month else 0
-    cur_month_days = cur_month["days_to_expire"] if cur_month else 999
-
-    signal_metrics = {
-        "pe_ttm_pct_10y": metrics["pe_ttm_pct"].get("10y", 100),
-        "current_month_discount": cur_month_disc,
-        "current_month_days": cur_month_days,
-    }
-    sigs = evaluate(cfg.position.status, signal_metrics, cfg.thresholds)
+    sigs = evaluate(cfg.position.status, _extract_signal_metrics(metrics), cfg.thresholds)
 
     # 写入 signals 表
     for s in sigs:
@@ -174,23 +203,14 @@ def cmd_report(args) -> int:
 
 
 def cmd_status(args) -> int:
-    cfg = _ensure_config(Path(args.config))
-    conn = init_db(Path(args.db))
+    cfg = _ensure_config()
+    conn = init_db(DB_PATH)
     metrics = _build_metrics(conn, cfg)
     if not metrics:
         print("[ERR] DB 无数据，请先运行 scan", file=sys.stderr)
         return 1
 
-    cur_month = next(
-        (c for c in metrics["contracts"] if c["contract_type"] == "当月"), None)
-    cur_month_disc = cur_month["annualized_discount"] if cur_month else 0
-    cur_month_days = cur_month["days_to_expire"] if cur_month else 999
-
-    sigs = evaluate(cfg.position.status, {
-        "pe_ttm_pct_10y": metrics["pe_ttm_pct"].get("10y", 100),
-        "current_month_discount": cur_month_disc,
-        "current_month_days": cur_month_days,
-    }, cfg.thresholds)
+    sigs = evaluate(cfg.position.status, _extract_signal_metrics(metrics), cfg.thresholds)
     top = min(sigs, key=lambda s: s.priority) if sigs else None
     sig_type = top.type if top else "none"
 
@@ -199,31 +219,25 @@ def cmd_status(args) -> int:
     return 0
 
 
+COMMANDS = {"scan": cmd_scan, "report": cmd_report, "status": cmd_status}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="中证1000 贴水策略监控")
-    parser.add_argument("--db", default=str(DEFAULT_DB), help="SQLite DB 路径")
-    parser.add_argument("--config", default=str(DEFAULT_CONFIG), help="配置文件路径")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    sub.add_parser("scan", help="拉数据入库")
+    p_scan = sub.add_parser("scan", help="拉数据入库")
+    p_scan.add_argument("--date", help="指定交易日 YYYY-MM-DD；不传则自动回退到最近有数据的交易日")
     sub.add_parser("report", help="生成 Markdown 报告")
     sub.add_parser("status", help="一行快速查状态")
     sub.add_parser("run", help="scan + report 一键")
 
     args = parser.parse_args()
-    if args.cmd == "scan":
-        return cmd_scan(args)
-    elif args.cmd == "report":
-        return cmd_report(args)
-    elif args.cmd == "status":
-        return cmd_status(args)
-    elif args.cmd == "run":
+    if args.cmd == "run":
         rc = cmd_scan(args)
-        if rc != 0:
-            return rc
-        return cmd_report(args)
-    return 1
+        return rc if rc else cmd_report(args)
+    return COMMANDS[args.cmd](args)
 
 
 if __name__ == "__main__":
