@@ -52,21 +52,6 @@ def _contracts_table(metrics: dict) -> str:
     return header + "\n" + "\n".join(rows) if rows else header + "\n| 无数据 |"
 
 
-def _box_table(metrics: dict) -> str:
-    """估值箱体表（基于当前 EPS_TTM 反推各分位对应点位）。"""
-    eps = metrics.get("eps_ttm", 0)
-    pe_pct = metrics.get("pe_ttm_pct", {})
-    # 从分位值反推点位需要历史 PE 分位数表，这里用简化版：
-    # 直接用当前 PE 的 10y 分位，给出几个关键箱体
-    cur_pe = metrics["pe_ttm"]
-    cur_close = metrics["close"]
-    return (
-        f"当前 PE_TTM {cur_pe:.1f}，EPS_TTM {eps:.1f}，"
-        f"近10年分位 {pe_pct.get('10y', 0):.1f}%\n"
-        f"★ 当前点位 {cur_close:.0f}"
-    )
-
-
 def _option_table(opt: dict) -> str:
     """卖 call 增厚分析表。"""
     lines = [
@@ -135,10 +120,6 @@ def generate_report(
         lines.append("## 卖 Call 增厚分析（10% OTM）")
         lines.append(_option_table(opt))
         lines.append("")
-
-    lines.append("## 估值箱体")
-    lines.append(_box_table(metrics))
-    lines.append("")
 
     # 操作建议
     if signals:
