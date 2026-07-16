@@ -7,7 +7,7 @@ from pathlib import Path
 from datetime import datetime
 
 from db import (
-    get_conn, init_db, upsert_valuation, upsert_contract,
+    init_db, upsert_valuation, upsert_contract,
     insert_signal, query_latest_valuation, query_valuation_history,
     query_contracts_by_date, query_main_continuous_history,
     SCHEMA,

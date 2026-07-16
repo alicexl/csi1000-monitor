@@ -102,7 +102,7 @@ def fetch_main_continuous(spot_close: float, ref_date: date) -> list[dict]:
                 "expire_date": None,
                 "days_to_expire": None,
                 "basis": compute_basis(close, spot_close),
-                "annualized_discount": 0.0,  # 主力连续无交割日，无法年化
+                "annualized_discount": None,  # 主力连续无交割日，无法年化
                 "fetched_at": datetime.now().isoformat(timespec="seconds"),
             })
         except (ValueError, TypeError, KeyError):

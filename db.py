@@ -71,10 +71,6 @@ def init_db(db_path: Path) -> sqlite3.Connection:
     return conn
 
 
-# Alias for compatibility (test imports get_conn)
-get_conn = init_db
-
-
 def upsert_valuation(conn: sqlite3.Connection, row: dict[str, Any]) -> bool:
     """插入估值行；PK 冲突则忽略。返回 True=新增, False=已存在。"""
     sql = """
@@ -124,8 +120,10 @@ def query_latest_valuation(conn: sqlite3.Connection) -> dict[str, Any] | None:
 
 
 def query_valuation_history(conn: sqlite3.Connection, days: int = 3650) -> list[dict[str, Any]]:
+    cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
     cur = conn.execute(
-        "SELECT * FROM daily_valuation ORDER BY date DESC LIMIT ?", (days,))
+        "SELECT * FROM daily_valuation WHERE date >= ? "
+        "ORDER BY date DESC LIMIT ?", (cutoff, days))
     rows = cur.fetchall()
     return [dict(r) for r in reversed(rows)]  # 按日期升序返回
 
