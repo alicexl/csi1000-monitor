@@ -38,17 +38,13 @@ class TestRetry(unittest.TestCase):
 
 class TestBuildValuationRow(unittest.TestCase):
     def test_merge_pe_pb(self):
-        """PE 行和 PB 行合并成一条 valuation 记录"""
-        pe_row = {
+        """merged row（PE + PB 已 join）构造 valuation 记录"""
+        row = build_valuation_row({
             "date": "2026-07-10", "close": 8198.31,
             "pe_static": 35.77, "pe_ttm": 34.57, "pe_ttm_eq": 61.05,
             "pe_static_med": 41.55, "pe_ttm_med": 40.91,
-        }
-        pb_row = {
-            "date": "2026-07-10", "close": 8198.31,
             "pb": 2.58, "pb_med": 2.65, "pb_w": 4.77,
-        }
-        row = build_valuation_row(pe_row, pb_row)
+        })
         self.assertEqual(row["date"], "2026-07-10")
         self.assertAlmostEqual(row["close"], 8198.31)
         self.assertAlmostEqual(row["pe_ttm"], 34.57)

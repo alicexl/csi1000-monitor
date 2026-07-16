@@ -30,19 +30,19 @@ def retry(fn: Callable, retries: int = 3, delays: tuple = (2, 4, 8)) -> Any:
     return None
 
 
-def build_valuation_row(pe_row: dict, pb_row: dict) -> dict:
-    """合并 PE 行和 PB 行成一条 daily_valuation 记录。"""
+def build_valuation_row(row: dict) -> dict:
+    """从 merged row（PE + PB 已 join）构造 daily_valuation 记录。"""
     return {
-        "date": str(pe_row["date"])[:10],
-        "close": float(pe_row["close"]),
-        "pe_static": float(pe_row.get("pe_static", 0)),
-        "pe_ttm": float(pe_row.get("pe_ttm", 0)),
-        "pe_ttm_eq": float(pe_row.get("pe_ttm_eq", 0)),
-        "pe_static_med": float(pe_row.get("pe_static_med", 0)),
-        "pe_ttm_med": float(pe_row.get("pe_ttm_med", 0)),
-        "pb": float(pb_row.get("pb", 0)),
-        "pb_med": float(pb_row.get("pb_med", 0)),
-        "pb_w": float(pb_row.get("pb_w", 0)),
+        "date": str(row["date"])[:10],
+        "close": float(row["close"]),
+        "pe_static": float(row.get("pe_static", 0)),
+        "pe_ttm": float(row.get("pe_ttm", 0)),
+        "pe_ttm_eq": float(row.get("pe_ttm_eq", 0)),
+        "pe_static_med": float(row.get("pe_static_med", 0)),
+        "pe_ttm_med": float(row.get("pe_ttm_med", 0)),
+        "pb": float(row.get("pb", 0)),
+        "pb_med": float(row.get("pb_med", 0)),
+        "pb_w": float(row.get("pb_w", 0)),
         "fetched_at": datetime.now().isoformat(timespec="seconds"),
     }
 
@@ -71,7 +71,7 @@ def fetch_valuation() -> list[dict]:
     rows = []
     for _, r in merged.iterrows():
         try:
-            rows.append(build_valuation_row(r.to_dict(), r.to_dict()))
+            rows.append(build_valuation_row(r.to_dict()))
         except (ValueError, TypeError):
             continue
     return rows
