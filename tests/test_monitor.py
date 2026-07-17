@@ -1,8 +1,10 @@
 # tests/test_monitor.py
 from __future__ import annotations
 import unittest
+from datetime import date
+from unittest.mock import patch
 
-from monitor import _extract_signal_metrics
+from monitor import _extract_signal_metrics, _target_trade_date
 
 
 def _contract(ctype, disc, days):
@@ -60,6 +62,32 @@ class TestExtractSignalMetrics(unittest.TestCase):
         out = _extract_signal_metrics(self.metrics, switch_days=7)
         self.assertAlmostEqual(out["current_month_discount"], 0)
         self.assertEqual(out["current_month_days"], 999)
+
+
+class TestTargetTradeDate(unittest.TestCase):
+    def _mocked(self, y, m, d):
+        return patch("monitor.date", wraps=date)
+
+    def test_weekday_returns_self(self):
+        """工作日 → 当天"""
+        with patch("monitor.date") as mock_date:
+            mock_date.today.return_value = date(2026, 7, 17)  # Friday
+            mock_date.side_effect = lambda *a, **k: date(*a, **k)
+            self.assertEqual(_target_trade_date(), date(2026, 7, 17))
+
+    def test_saturday_falls_back_to_friday(self):
+        """周六 → 回退到周五"""
+        with patch("monitor.date") as mock_date:
+            mock_date.today.return_value = date(2026, 7, 18)  # Saturday
+            mock_date.side_effect = lambda *a, **k: date(*a, **k)
+            self.assertEqual(_target_trade_date(), date(2026, 7, 17))
+
+    def test_sunday_falls_back_to_friday(self):
+        """周日 → 回退到周五"""
+        with patch("monitor.date") as mock_date:
+            mock_date.today.return_value = date(2026, 7, 19)  # Sunday
+            mock_date.side_effect = lambda *a, **k: date(*a, **k)
+            self.assertEqual(_target_trade_date(), date(2026, 7, 17))
 
 
 if __name__ == "__main__":

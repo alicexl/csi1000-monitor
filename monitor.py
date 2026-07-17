@@ -68,7 +68,18 @@ def _extract_signal_metrics(metrics: dict, switch_days: int = 7) -> dict:
     }
 
 
-def cmd_scan(args) -> int:
+def _target_trade_date() -> date:
+    """目标交易日：周末回退到周五（节假日由 akshare 自然返回空数据）。"""
+    today = date.today()
+    if today.weekday() == 5:  # Sat
+        return today - timedelta(days=1)
+    if today.weekday() == 6:  # Sun
+        return today - timedelta(days=2)
+    return today
+
+
+def _scan() -> int:
+    """拉数据入库。返回 0 成功 / 非 0 失败。"""
     conn = init_db(DB_PATH)
 
     # 1. 拉估值
@@ -169,7 +180,7 @@ def cmd_report(args) -> int:
     conn = init_db(DB_PATH)
     metrics = _build_metrics(conn)
     if not metrics:
-        print("[ERR] DB 无数据，请先运行 scan", file=sys.stderr)
+        print("[ERR] DB 无数据，请先运行 run", file=sys.stderr)
         return 1
 
     sigs = evaluate(POSITION.status, _extract_signal_metrics(metrics, THRESHOLDS.switch_days), THRESHOLDS)
@@ -201,7 +212,7 @@ def cmd_status(args) -> int:
     conn = init_db(DB_PATH)
     metrics = _build_metrics(conn)
     if not metrics:
-        print("[ERR] DB 无数据，请先运行 scan", file=sys.stderr)
+        print("[ERR] DB 无数据，请先运行 run", file=sys.stderr)
         return 1
 
     sigs = evaluate(POSITION.status, _extract_signal_metrics(metrics, THRESHOLDS.switch_days), THRESHOLDS)
@@ -213,7 +224,30 @@ def cmd_status(args) -> int:
     return 0
 
 
-COMMANDS = {"scan": cmd_scan, "report": cmd_report, "status": cmd_status}
+COMMANDS = {"report": cmd_report, "status": cmd_status}
+
+
+def cmd_run(args) -> int:
+    """DB 数据不是最新（目标交易日）则先拉数据，再生成报告。"""
+    conn = init_db(DB_PATH)
+    latest = query_latest_valuation(conn)
+    target = _target_trade_date()
+    db_date = None
+    if latest:
+        try:
+            db_date = datetime.strptime(str(latest["date"]), "%Y-%m-%d").date()
+        except ValueError:
+            db_date = None
+    if db_date and db_date >= target:
+        print(f"[INFO] DB 已是最新（{db_date}），跳过数据拉取",
+              flush=True)
+        conn.close()
+    else:
+        conn.close()
+        rc = _scan()
+        if rc:
+            return rc
+    return cmd_report(args)
 
 
 def main() -> int:
@@ -221,15 +255,13 @@ def main() -> int:
         description="中证1000 贴水策略监控")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    p_scan = sub.add_parser("scan", help="拉数据入库")
-    sub.add_parser("report", help="生成 Markdown 报告")
-    sub.add_parser("status", help="一行快速查状态")
-    sub.add_parser("run", help="scan + report 一键")
+    sub.add_parser("report", help="生成 Markdown 报告（离线）")
+    sub.add_parser("status", help="一行快速查状态（离线）")
+    sub.add_parser("run", help="自动拉数据 + 报告（DB 是最新则跳过拉取）")
 
     args = parser.parse_args()
     if args.cmd == "run":
-        rc = cmd_scan(args)
-        return rc if rc else cmd_report(args)
+        return cmd_run(args)
     return COMMANDS[args.cmd](args)
 
 
