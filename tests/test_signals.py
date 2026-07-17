@@ -2,8 +2,7 @@
 from __future__ import annotations
 import unittest
 
-from config import Thresholds
-from signals import Signal, evaluate
+from signals import Signal, Thresholds, evaluate
 
 EMPTY = "empty"
 HOLDING = "holding"

@@ -2,17 +2,12 @@
 from __future__ import annotations
 import unittest
 
-from config import Config, Position, Thresholds
-from signals import Signal
+from signals import Signal, Position, Thresholds
 from reporter import generate_report, render_status_line, format_signals_section
 
 
-def make_config(status="empty"):
-    return Config(
-        position=Position(status=status),
-        thresholds=Thresholds(),
-        pct_windows=["10y", "5y", "all"],
-    )
+def make_position(status="empty"):
+    return Position(status=status)
 
 
 def make_metrics():
@@ -50,10 +45,10 @@ class TestFormatSignals(unittest.TestCase):
 
 class TestGenerateReport(unittest.TestCase):
     def test_empty_state_report_contains_sections(self):
-        cfg = make_config("empty")
+        pos = make_position("empty")
         metrics = make_metrics()
         sigs = [Signal("wait", 5, "PE 81.8%", {"pe": 81.8}, {"entry": 50}, "继续等待")]
-        report = generate_report("2026-07-10", cfg, metrics, sigs)
+        report = generate_report("2026-07-10", pos, metrics, sigs)
         self.assertIn("2026-07-10", report)
         self.assertIn("空仓", report)
         self.assertIn("估值面板", report)
@@ -62,32 +57,29 @@ class TestGenerateReport(unittest.TestCase):
         self.assertIn("IM2607", report)
 
     def test_holding_state_report_shows_position(self):
-        cfg = Config(
-            position=Position(status="holding", contract="IM2607",
-                              entry_date="2026-06-01", entry_price=7500.0),
-            thresholds=Thresholds(),
-        )
+        pos = Position(status="holding", contract="IM2607",
+                       entry_date="2026-06-01", entry_price=7500.0)
         metrics = make_metrics()
         sigs = [Signal("hold", 5, "持有", {}, {}, "继续持有")]
-        report = generate_report("2026-07-10", cfg, metrics, sigs)
+        report = generate_report("2026-07-10", pos, metrics, sigs)
         self.assertIn("持仓", report)
         self.assertIn("IM2607", report)
         self.assertIn("7500", report)
 
     def test_report_contains_pe_pb_divergence(self):
-        cfg = make_config()
+        pos = make_position()
         metrics = make_metrics()
         sigs = []
-        report = generate_report("2026-07-10", cfg, metrics, sigs)
+        report = generate_report("2026-07-10", pos, metrics, sigs)
         self.assertIn("PE-PB 背离", report)
         self.assertIn("24.3", report)
 
 
 class TestStatusLine(unittest.TestCase):
     def test_one_line_output(self):
-        cfg = make_config("empty")
+        pos = make_position("empty")
         metrics = make_metrics()
-        line = render_status_line("2026-07-10", cfg, metrics, "wait")
+        line = render_status_line("2026-07-10", pos, metrics, "wait")
         self.assertIn("2026-07-10", line)
         self.assertIn("空仓", line)
         self.assertIn("8198", line)

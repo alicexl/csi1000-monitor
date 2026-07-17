@@ -6,11 +6,13 @@ import tempfile
 import os
 from pathlib import Path
 
-from config import Config, Position, Thresholds, default_config_template
+from signals import evaluate, Position, Thresholds
 from db import init_db, upsert_valuation, upsert_contract
 from valuation import compute_pct_for_windows, pe_pb_divergence
-from signals import evaluate
 from reporter import generate_report, render_status_line
+
+
+PCT_WINDOWS = ["10y", "5y", "all"]
 
 
 def seed_fixture_db(db_path):
@@ -74,15 +76,15 @@ class TestE2EReport(unittest.TestCase):
         self.conn.close()
         os.unlink(self.db_path)
 
-    def _build_metrics(self, cfg):
+    def _build_metrics(self):
         from db import (query_latest_valuation, query_valuation_history,
                         query_contracts_by_date, query_main_continuous_history)
         latest = query_latest_valuation(self.conn)
         history = query_valuation_history(self.conn, days=3650)
         contracts = query_contracts_by_date(self.conn, latest["date"])
-        pe_ttm_pct = compute_pct_for_windows(history, latest, "pe_ttm", cfg.pct_windows)
-        pe_s_pct = compute_pct_for_windows(history, latest, "pe_static", cfg.pct_windows)
-        pb_pct = compute_pct_for_windows(history, latest, "pb", cfg.pct_windows)
+        pe_ttm_pct = compute_pct_for_windows(history, latest, "pe_ttm", PCT_WINDOWS)
+        pe_s_pct = compute_pct_for_windows(history, latest, "pe_static", PCT_WINDOWS)
+        pb_pct = compute_pct_for_windows(history, latest, "pb", PCT_WINDOWS)
         main_hist = query_main_continuous_history(self.conn, days=730)
         main_basises = [abs(r["basis"]) for r in main_hist if r.get("basis") is not None]
         cur_main_abs = abs(main_hist[-1]["basis"]) if main_hist else 0
@@ -102,15 +104,16 @@ class TestE2EReport(unittest.TestCase):
         }
 
     def test_empty_state_report(self):
-        cfg = Config(position=Position(status="empty"), thresholds=Thresholds())
-        metrics = self._build_metrics(cfg)
+        pos = Position(status="empty")
+        t = Thresholds()
+        metrics = self._build_metrics()
         cur_month = next(c for c in metrics["contracts"] if c["contract_type"] == "当月")
         sigs = evaluate("empty", {
             "pe_ttm_pct_10y": metrics["pe_ttm_pct"]["10y"],
             "current_month_discount": cur_month["annualized_discount"],
             "current_month_days": cur_month["days_to_expire"],
-        }, cfg.thresholds)
-        report = generate_report("2026-07-10", cfg, metrics, sigs)
+        }, t)
+        report = generate_report("2026-07-10", pos, metrics, sigs)
         # 关键内容存在
         self.assertIn("中证1000", report)
         self.assertIn("空仓", report)
@@ -121,20 +124,18 @@ class TestE2EReport(unittest.TestCase):
         self.assertTrue(sig_types & {"wait", "entry", "warn_entry"})
 
     def test_holding_state_status_line(self):
-        cfg = Config(
-            position=Position(status="holding", contract="IM2607",
-                              entry_date="2026-06-15", entry_price=7500.0),
-            thresholds=Thresholds(),
-        )
-        metrics = self._build_metrics(cfg)
+        pos = Position(status="holding", contract="IM2607",
+                       entry_date="2026-06-15", entry_price=7500.0)
+        t = Thresholds()
+        metrics = self._build_metrics()
         cur_month = next(c for c in metrics["contracts"] if c["contract_type"] == "当月")
         sigs = evaluate("holding", {
             "pe_ttm_pct_10y": metrics["pe_ttm_pct"]["10y"],
             "current_month_discount": cur_month["annualized_discount"],
             "current_month_days": cur_month["days_to_expire"],
-        }, cfg.thresholds)
+        }, t)
         top = min(sigs, key=lambda s: s.priority)
-        line = render_status_line("2026-07-10", cfg, metrics, top.type)
+        line = render_status_line("2026-07-10", pos, metrics, top.type)
         self.assertIn("持仓", line)
         self.assertIn("2026-07-10", line)
 

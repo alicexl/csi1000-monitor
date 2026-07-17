@@ -3,7 +3,23 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from config import Thresholds
+
+@dataclass
+class Thresholds:
+    entry_pe_pct: float = 50
+    entry_discount: float = 5
+    warn_entry_pe_pct: float = 60
+    reduce_pe_pct: float = 85
+    warn_reduce_pe_pct: float = 75
+    switch_days: int = 7
+
+
+@dataclass
+class Position:
+    status: str = "empty"  # "empty" | "holding"
+    contract: str | None = None
+    entry_date: str | None = None
+    entry_price: float | None = None
 
 
 @dataclass

@@ -5,7 +5,6 @@ import sys
 from pathlib import Path
 from datetime import date, datetime, timedelta
 
-from config import Config, load_config, default_config_template
 from db import (
     init_db, upsert_valuation, upsert_contract, insert_signal,
     query_latest_valuation, query_valuation_history,
@@ -13,22 +12,22 @@ from db import (
 )
 from data_fetcher import fetch_valuation, fetch_main_continuous, fetch_daily_contracts, fetch_otm_call
 from valuation import compute_pct_for_windows, pe_pb_divergence
-from signals import evaluate
+from signals import evaluate, Thresholds, Position
 from reporter import generate_report, render_status_line
 
 ROOT = Path(__file__).parent
 DB_PATH = ROOT / "csi1000_monitor.db"
-CONFIG_PATH = ROOT / "config.yaml"
 REPORTS_DIR = ROOT / "reports"
 
+# ─── 用户可编辑状态 ───────────────────────────────────────────
+# 开仓后手动改 status="holding" + 填写 contract/entry_date/entry_price
+POSITION = Position(status="empty")
 
-def _ensure_config() -> Config:
-    """配置文件不存在则从模板生成。"""
-    if not CONFIG_PATH.exists():
-        CONFIG_PATH.write_text(default_config_template(), encoding="utf-8")
-        print(f"[INFO] 已生成默认配置: {CONFIG_PATH}", file=sys.stderr)
-        print(f"[INFO] 请按需编辑后重新运行", file=sys.stderr)
-    return load_config(CONFIG_PATH)
+# 策略阈值（需要调参时改这里）
+THRESHOLDS = Thresholds()
+
+# 估值分位计算窗口
+PCT_WINDOWS = ["10y", "5y", "all"]
 
 
 def _resolve_trade_date(spot_close: float,
@@ -70,7 +69,6 @@ def _extract_signal_metrics(metrics: dict, switch_days: int = 7) -> dict:
 
 
 def cmd_scan(args) -> int:
-    cfg = _ensure_config()
     conn = init_db(DB_PATH)
 
     # 1. 拉估值
@@ -113,7 +111,7 @@ def cmd_scan(args) -> int:
     return 0
 
 
-def _build_metrics(conn, cfg: Config) -> dict:
+def _build_metrics(conn) -> dict:
     """从 DB 拉数据，组装 metrics dict 供 signals/reporter 使用。"""
     latest = query_latest_valuation(conn)
     if latest is None:
@@ -122,9 +120,9 @@ def _build_metrics(conn, cfg: Config) -> dict:
     contracts = query_contracts_by_date(conn, latest["date"])
 
     # 多区间分位
-    pe_ttm_pct = compute_pct_for_windows(history, latest, "pe_ttm", cfg.pct_windows)
-    pe_static_pct = compute_pct_for_windows(history, latest, "pe_static", cfg.pct_windows)
-    pb_pct = compute_pct_for_windows(history, latest, "pb", cfg.pct_windows)
+    pe_ttm_pct = compute_pct_for_windows(history, latest, "pe_ttm", PCT_WINDOWS)
+    pe_static_pct = compute_pct_for_windows(history, latest, "pe_static", PCT_WINDOWS)
+    pb_pct = compute_pct_for_windows(history, latest, "pb", PCT_WINDOWS)
 
     pe_ttm = latest.get("pe_ttm") or 0
     pb = latest.get("pb") or 0
@@ -161,21 +159,20 @@ def _build_metrics(conn, cfg: Config) -> dict:
     try:
         metrics["otm_call"] = fetch_otm_call(
             close, date.today(), otm_pct=10.0,
-            switch_days=cfg.thresholds.switch_days)
+            switch_days=THRESHOLDS.switch_days)
     except Exception:
         metrics["otm_call"] = None
     return metrics
 
 
 def cmd_report(args) -> int:
-    cfg = _ensure_config()
     conn = init_db(DB_PATH)
-    metrics = _build_metrics(conn, cfg)
+    metrics = _build_metrics(conn)
     if not metrics:
         print("[ERR] DB 无数据，请先运行 scan", file=sys.stderr)
         return 1
 
-    sigs = evaluate(cfg.position.status, _extract_signal_metrics(metrics, cfg.thresholds.switch_days), cfg.thresholds)
+    sigs = evaluate(POSITION.status, _extract_signal_metrics(metrics, THRESHOLDS.switch_days), THRESHOLDS)
 
     # 写入 signals 表
     for s in sigs:
@@ -190,7 +187,7 @@ def cmd_report(args) -> int:
         })
 
     # 生成报告
-    report = generate_report(metrics["date"], cfg, metrics, sigs)
+    report = generate_report(metrics["date"], POSITION, metrics, sigs)
     REPORTS_DIR.mkdir(exist_ok=True)
     out_path = REPORTS_DIR / f"csi1000_{metrics['date']}.md"
     out_path.write_text(report, encoding="utf-8")
@@ -201,18 +198,17 @@ def cmd_report(args) -> int:
 
 
 def cmd_status(args) -> int:
-    cfg = _ensure_config()
     conn = init_db(DB_PATH)
-    metrics = _build_metrics(conn, cfg)
+    metrics = _build_metrics(conn)
     if not metrics:
         print("[ERR] DB 无数据，请先运行 scan", file=sys.stderr)
         return 1
 
-    sigs = evaluate(cfg.position.status, _extract_signal_metrics(metrics, cfg.thresholds.switch_days), cfg.thresholds)
+    sigs = evaluate(POSITION.status, _extract_signal_metrics(metrics, THRESHOLDS.switch_days), THRESHOLDS)
     top = min(sigs, key=lambda s: s.priority) if sigs else None
     sig_type = top.type if top else "none"
 
-    print(render_status_line(metrics["date"], cfg, metrics, sig_type))
+    print(render_status_line(metrics["date"], POSITION, metrics, sig_type))
     conn.close()
     return 0
 

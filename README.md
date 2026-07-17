@@ -56,27 +56,12 @@ python monitor.py status
 
 ## 配置
 
-编辑 `config.yaml` 维护持仓状态和阈值：
+直接编辑 `monitor.py` 顶部的常量：
 
-```yaml
-position:
-  status: empty        # empty（空仓）| holding（持仓）
-  contract: null       # 持仓合约，如 IM2607
-  entry_date: null     # 入场日期
-  entry_price: null    # 入场价
-
-thresholds:
-  entry_pe_pct: 50     # 入场：PE_TTM 10y分位 <
-  entry_discount: 5    # 入场：年化贴水率 > %
-  warn_entry_pe_pct: 60
-  reduce_pe_pct: 85    # 减仓：PE_TTM 10y分位 >
-  warn_reduce_pe_pct: 75
-  switch_days: 7       # 切换提醒：当月剩余天数 <
-
-pct_windows:
-  - 10y
-  - 5y
-  - all
+```python
+POSITION = Position(status="empty")  # 开仓后改 "holding" + 填 contract/entry_date/entry_price
+THRESHOLDS = Thresholds()             # 策略阈值（默认值见 signals.py）
+PCT_WINDOWS = ["10y", "5y", "all"]
 ```
 
 报告内容会根据持仓状态自动调整：空仓展示入场条件距离，持仓展示减仓/切换/盈亏。
@@ -96,17 +81,15 @@ pct_windows:
 
 ```
 csi1000-monitor/
-├── monitor.py          # CLI 入口（scan/report/status/run）
-├── config.py           # 配置加载（dataclass + YAML）
+├── monitor.py          # CLI 入口（scan/report/status/run）+ 用户配置常量
 ├── db.py               # SQLite（WAL + thread-local 连接）
 ├── data_fetcher.py     # akshare 拉取（PE/PB + 期货 + 期权）
 ├── valuation.py        # 多区间历史分位
 ├── basis.py            # 基差/年化贴水/合约分类
 ├── options.py          # BS 定价 + IV + 卖 call 增厚分析
-├── signals.py          # 7 种信号判断矩阵
+├── signals.py          # 7 种信号判断矩阵 + Thresholds/Position 数据类
 ├── reporter.py         # Markdown 报告生成
-├── config.yaml         # 持仓状态 + 阈值
-├── tests/              # 76 个单元测试 + E2E
+├── tests/              # 80 个单元测试 + E2E
 └── reports/            # Markdown 报告输出
 ```
 

@@ -2,8 +2,7 @@
 from __future__ import annotations
 from typing import Any
 
-from config import Config
-from signals import Signal
+from signals import Signal, Position
 
 STATE_LABEL = {
     "empty": "🟡 空仓等待",
@@ -75,12 +74,12 @@ def _option_table(opt: dict) -> str:
 
 def generate_report(
     report_date: str,
-    config: Config,
+    position: Position,
     metrics: dict[str, Any],
     signals: list[Signal],
 ) -> str:
     """生成完整 Markdown 报告。"""
-    state = config.position.status
+    state = position.status
     label = STATE_LABEL.get(state, state)
     close = metrics.get("close", 0)
 
@@ -129,11 +128,11 @@ def generate_report(
         lines.append("")
 
     # 持仓盈亏（holding 状态）
-    if state == "holding" and config.position.entry_price:
-        entry = config.position.entry_price
+    if state == "holding" and position.entry_price:
+        entry = position.entry_price
         pnl_pct = (close - entry) / entry * 100
         lines.append(f"## 持仓盈亏")
-        lines.append(f"入场 {config.position.entry_date} @ {entry:.0f}，"
+        lines.append(f"入场 {position.entry_date} @ {entry:.0f}，"
                      f"当前 {close:.0f}，浮盈 {pnl_pct:+.1f}%")
         lines.append("")
 
@@ -141,10 +140,10 @@ def generate_report(
 
 
 def render_status_line(
-    report_date: str, config: Config, metrics: dict, signal_type: str
+    report_date: str, position: Position, metrics: dict, signal_type: str
 ) -> str:
     """status 子命令一行输出。"""
-    state = config.position.status
+    state = position.status
     state_cn = "空仓" if state == "empty" else "持仓"
     close = metrics.get("close", 0)
     pe = metrics.get("pe_ttm", 0)

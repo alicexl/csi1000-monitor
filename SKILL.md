@@ -67,15 +67,15 @@ cd D:/workspace/csi1000-monitor && python monitor.py run 2>&1 | grep -v "UserWar
 4. **卖 Call 增厚**：10% OTM call 的权利金、IV、年化增厚率、行权概率
 5. **操作建议**：根据信号给出具体建议
 
-## config.yaml
+## 配置
 
-持仓状态和阈值在 `D:/workspace/csi1000-monitor/config.yaml`：
+持仓状态和阈值在 `D:/workspace/csi1000-monitor/monitor.py` 顶部：
 
-- `position.status`: `empty`（空仓）| `holding`（持仓）
-- `thresholds`: 入场/减仓/切换阈值
-- `pct_windows`: `[10y, 5y, all]`
+- `POSITION = Position(status="empty")` — `empty`（空仓）| `holding`（持仓）
+- `THRESHOLDS = Thresholds()` — 默认阈值（定义见 `signals.py`）
+- `PCT_WINDOWS = ["10y", "5y", "all"]`
 
-**重要**：用户实际开仓后必须手动改 `position.status: holding`，报告逻辑会切换（空仓看入场条件，持仓看减仓/切换）。
+**重要**：用户实际开仓后必须手动改 `POSITION.status = "holding"`，报告逻辑会切换（空仓看入场条件，持仓看减仓/切换）。
 
 ## 常见问题
 
