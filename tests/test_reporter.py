@@ -79,11 +79,12 @@ class TestStatusLine(unittest.TestCase):
     def test_one_line_output(self):
         pos = make_position("empty")
         metrics = make_metrics()
-        line = render_status_line("2026-07-10", pos, metrics, "wait")
+        line = render_status_line("2026-07-10", pos, metrics, "wait", 30.5)
         self.assertIn("2026-07-10", line)
         self.assertIn("空仓", line)
         self.assertIn("8198", line)
         self.assertIn("wait", line)
+        self.assertIn("30.5", line)
 
 
 if __name__ == "__main__":

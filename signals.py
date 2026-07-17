@@ -171,7 +171,7 @@ def evaluate(
             type="wait", priority=5,
             condition=f"未知持仓状态: {state}",
             current={}, threshold={},
-            suggestion="检查 config.yaml 的 position.status",
+            suggestion="检查 monitor.py 的 POSITION.status",
         ))
 
     sigs.sort(key=lambda s: s.priority)

@@ -135,7 +135,8 @@ class TestE2EReport(unittest.TestCase):
             "current_month_days": cur_month["days_to_expire"],
         }, t)
         top = min(sigs, key=lambda s: s.priority)
-        line = render_status_line("2026-07-10", pos, metrics, top.type)
+        line = render_status_line("2026-07-10", pos, metrics, top.type,
+                                 cur_month["annualized_discount"])
         self.assertIn("持仓", line)
         self.assertIn("2026-07-10", line)
 

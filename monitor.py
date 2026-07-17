@@ -86,7 +86,7 @@ def _resolve_trade_date(spot_close: float,
     """返回 (交易日, 当日合约列表)。从今天起向前回退最多 max_lookback 天。
 
     CFFEX 当日数据通常要下午 3 点后才发布；凌晨/早盘跑 scan 时自动用上一交易日。
-    顺带把合约数据带回，避免 cmd_scan 二次拉取。
+    顺带把合约数据带回，避免 _scan 二次拉取。
     """
     for i in range(max_lookback + 1):
         d = date.today() - timedelta(days=i)
@@ -192,11 +192,11 @@ def _build_metrics(conn) -> dict:
 
     # 主力连续贴水分位（近2年）
     main_hist = query_main_continuous_history(conn, days=730)
-    main_basises = [abs(r["basis"]) for r in main_hist if r.get("basis") is not None]
+    main_bases = [abs(r["basis"]) for r in main_hist if r.get("basis") is not None]
     cur_main = main_hist[-1] if main_hist else None
-    if cur_main and main_basises:
+    if cur_main and main_bases:
         cur_main_abs = abs(cur_main.get("basis", 0))
-        main_pct = sum(1 for b in main_basises if b <= cur_main_abs) / len(main_basises) * 100
+        main_pct = sum(1 for b in main_bases if b <= cur_main_abs) / len(main_bases) * 100
     else:
         main_pct = None
 
@@ -260,26 +260,25 @@ def _generate_report() -> int:
     return 0
 
 
-def cmd_status(args) -> int:
+def cmd_status() -> int:
     conn = init_db(DB_PATH)
     metrics = _build_metrics(conn)
     if not metrics:
         print("[ERR] DB 无数据，请先运行 run", file=sys.stderr)
         return 1
 
-    sigs = evaluate(POSITION.status, _extract_signal_metrics(metrics, THRESHOLDS.switch_days), THRESHOLDS)
+    sig_metrics = _extract_signal_metrics(metrics, THRESHOLDS.switch_days)
+    sigs = evaluate(POSITION.status, sig_metrics, THRESHOLDS)
     top = min(sigs, key=lambda s: s.priority) if sigs else None
     sig_type = top.type if top else "none"
 
-    print(render_status_line(metrics["date"], POSITION, metrics, sig_type))
+    print(render_status_line(metrics["date"], POSITION, metrics, sig_type,
+                             sig_metrics["current_month_discount"]))
     conn.close()
     return 0
 
 
-COMMANDS = {"status": cmd_status}
-
-
-def cmd_run(args) -> int:
+def cmd_run() -> int:
     """DB 数据不是最新（目标交易日）则先拉数据，再生成报告。"""
     conn = init_db(DB_PATH)
     latest = query_latest_valuation(conn)
@@ -312,8 +311,8 @@ def main() -> int:
 
     args = parser.parse_args()
     if args.cmd == "run":
-        return cmd_run(args)
-    return COMMANDS[args.cmd](args)
+        return cmd_run()
+    return cmd_status()
 
 
 if __name__ == "__main__":

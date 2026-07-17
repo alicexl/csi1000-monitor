@@ -140,9 +140,12 @@ def generate_report(
 
 
 def render_status_line(
-    report_date: str, position: Position, metrics: dict, signal_type: str
+    report_date: str, position: Position, metrics: dict,
+    signal_type: str, active_discount: float,
 ) -> str:
-    """status 子命令一行输出。"""
+    """status 子命令一行输出。active_discount 由调用方通过 _extract_signal_metrics 算好，
+    避免重复实现 fallback 逻辑（当月已交割 → 下月）。
+    """
     state = position.status
     state_cn = "空仓" if state == "empty" else "持仓"
     close = metrics.get("close", 0)
@@ -164,11 +167,6 @@ def render_status_line(
         else:
             warn = ""
 
-    contracts = metrics.get("contracts", [])
-    cur_month = next(
-        (c for c in contracts if c["contract_type"] == "当月"), None)
-    disc = cur_month["annualized_discount"] if cur_month else 0
-
     return (f"{report_date} | {state_cn} | {close:.0f}点 | "
             f"PE_TTM {pe:.1f} ({pe_pct:.1f}%{warn}) | "
-            f"当月贴水 {disc:+.1f}% | 信号: {signal_type}")
+            f"当月贴水 {active_discount:+.1f}% | 信号: {signal_type}")
