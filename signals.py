@@ -174,7 +174,11 @@ def _hold_signal(metrics: dict, t: Thresholds) -> Signal | None:
 def evaluate(
     state: str, metrics: dict[str, Any], thresholds: Thresholds
 ) -> list[Signal]:
-    """根据持仓状态 + 指标 + 阈值 → 返回信号列表（已按 priority 排序）。"""
+    """根据持仓状态 + 指标 + 阈值 → 返回信号列表（已按 priority 排序）。
+
+    后处理过滤：wait/hold 是兜底信号，与 entry/warn_entry/reduce/warn_reduce/switch
+    互斥——有具体动作信号时就不显示"继续等待/继续持有"，避免语义冲突。
+    """
     sigs: list[Signal] = []
 
     if state == "empty":
@@ -182,12 +186,18 @@ def evaluate(
             s = fn(metrics, thresholds)
             if s is not None:
                 sigs.append(s)
+        # 有动作信号时过滤 wait
+        if any(s.type in ("entry", "warn_entry") for s in sigs):
+            sigs = [s for s in sigs if s.type != "wait"]
     elif state == "holding":
         for fn in (_reduce_pe_signal, _reduce_basis_signal, _warn_reduce_signal,
                    _switch_signal, _hold_signal):
             s = fn(metrics, thresholds)
             if s is not None:
                 sigs.append(s)
+        # 有动作信号时过滤 hold
+        if any(s.type in ("reduce", "warn_reduce", "switch") for s in sigs):
+            sigs = [s for s in sigs if s.type != "hold"]
     else:
         sigs.append(Signal(
             type="wait", priority=5,

@@ -210,5 +210,66 @@ class TestPriority(unittest.TestCase):
         self.assertIn(3, priorities)  # switch
 
 
+class TestConflictFiltering(unittest.TestCase):
+    """evaluate() 后处理：wait/hold 与具体动作信号互斥。"""
+
+    def setUp(self):
+        self.t = Thresholds()
+
+    def test_entry_filters_wait(self):
+        """空仓 + entry 触发 → wait 被过滤掉"""
+        sigs = evaluate(EMPTY, make_metrics(pe_pct=40, discount=8), self.t)
+        types = [s.type for s in sigs]
+        self.assertIn("entry", types)
+        self.assertNotIn("wait", types)
+
+    def test_warn_entry_filters_wait(self):
+        """空仓 + warn_entry 触发 → wait 被过滤掉"""
+        sigs = evaluate(EMPTY, make_metrics(pe_pct=55, discount=8), self.t)
+        types = [s.type for s in sigs]
+        self.assertIn("warn_entry", types)
+        self.assertNotIn("wait", types)
+
+    def test_wait_only_when_no_action(self):
+        """空仓 + 无任何动作信号 → wait 兜底"""
+        sigs = evaluate(EMPTY, make_metrics(pe_pct=70, discount=3), self.t)
+        types = [s.type for s in sigs]
+        self.assertEqual(types, ["wait"])
+
+    def test_reduce_pe_filters_hold(self):
+        """持仓 + reduce_pe 触发 → hold 被过滤掉"""
+        sigs = evaluate(HOLDING, make_metrics(pe_pct=90, discount=8, days=20), self.t)
+        types = [s.type for s in sigs]
+        self.assertIn("reduce", types)
+        self.assertNotIn("hold", types)
+
+    def test_reduce_basis_filters_hold(self):
+        """持仓 + reduce_basis 触发 → hold 被过滤掉"""
+        sigs = evaluate(HOLDING, make_metrics(pe_pct=50, discount=-1, days=20), self.t)
+        types = [s.type for s in sigs]
+        self.assertIn("reduce", types)
+        self.assertNotIn("hold", types)
+
+    def test_switch_filters_hold(self):
+        """持仓 + switch 触发 → hold 被过滤掉"""
+        sigs = evaluate(HOLDING, make_metrics(pe_pct=50, discount=8, days=3), self.t)
+        types = [s.type for s in sigs]
+        self.assertIn("switch", types)
+        self.assertNotIn("hold", types)
+
+    def test_warn_reduce_filters_hold(self):
+        """持仓 + warn_reduce 触发 → hold 被过滤掉"""
+        sigs = evaluate(HOLDING, make_metrics(pe_pct=80, discount=8, days=20), self.t)
+        types = [s.type for s in sigs]
+        self.assertIn("warn_reduce", types)
+        self.assertNotIn("hold", types)
+
+    def test_hold_only_when_no_action(self):
+        """持仓 + 无任何动作信号 → hold 兜底"""
+        sigs = evaluate(HOLDING, make_metrics(pe_pct=50, discount=8, days=20), self.t)
+        types = [s.type for s in sigs]
+        self.assertEqual(types, ["hold"])
+
+
 if __name__ == "__main__":
     unittest.main()

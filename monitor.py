@@ -345,6 +345,10 @@ def cmd_close(args) -> int:
 
 
 def main() -> int:
+    # Windows 控制台默认 GBK 编码，无法输出 emoji；status_line 和报告里的 emoji 需要 UTF-8
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
     parser = argparse.ArgumentParser(
         description="中证1000 贴水策略监控")
     sub = parser.add_subparsers(dest="cmd", required=True)

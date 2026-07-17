@@ -86,6 +86,56 @@ class TestStatusLine(unittest.TestCase):
         self.assertIn("wait", line)
         self.assertIn("30.5", line)
 
+    def test_emoji_from_signal_type(self):
+        """emoji 直接从 signal_type 映射，不再依赖 pe_pct 阈值"""
+        pos = make_position("holding")
+        metrics = make_metrics()
+        # reduce → ⚠
+        line = render_status_line("2026-07-10", pos, metrics, "reduce", -0.5)
+        self.assertIn("⚠", line)
+        # switch → 🔄
+        line = render_status_line("2026-07-10", pos, metrics, "switch", 5.0)
+        self.assertIn("🔄", line)
+        # hold → ✅
+        line = render_status_line("2026-07-10", pos, metrics, "hold", 5.0)
+        self.assertIn("✅", line)
+        # entry → 🟢
+        pos_empty = make_position("empty")
+        line = render_status_line("2026-07-10", pos_empty, metrics, "entry", 5.0)
+        self.assertIn("🟢", line)
+        # wait → 空 emoji
+        line = render_status_line("2026-07-10", pos_empty, metrics, "wait", 5.0)
+        self.assertNotIn("⚠", line)
+        self.assertNotIn("🟢", line)
+
+
+class TestOperationAdvice(unittest.TestCase):
+    """操作建议：同 priority 多信号都展示。"""
+
+    def test_single_advice(self):
+        pos = make_position("empty")
+        metrics = make_metrics()
+        sigs = [Signal("wait", 5, "PE 70%", {}, {}, "继续等待")]
+        report = generate_report("2026-07-10", pos, metrics, sigs)
+        self.assertIn("继续等待", report)
+
+    def test_multiple_top_priority_advices(self):
+        """两个 priority=1 的 reduce 信号，suggestion 都应出现在操作建议里"""
+        pos = make_position("holding")
+        metrics = make_metrics()
+        sigs = [
+            Signal("reduce", 1, "PE > 85%", {"pe": 90}, {}, "估值过高，平仓止盈"),
+            Signal("reduce", 1, "贴水 ≤ 0", {"disc": -1}, {}, "升水失效，立即平仓"),
+            Signal("switch", 3, "天数 <7", {}, {}, "考虑换月"),
+        ]
+        report = generate_report("2026-07-10", pos, metrics, sigs)
+        # 操作建议 section 只提取出来看
+        advice_section = report.split("## 操作建议")[1]
+        self.assertIn("估值过高，平仓止盈", advice_section)
+        self.assertIn("升水失效，立即平仓", advice_section)
+        # switch 不是 top priority，不出现在操作建议 section
+        self.assertNotIn("考虑换月", advice_section)
+
 
 if __name__ == "__main__":
     unittest.main()

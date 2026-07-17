@@ -9,6 +9,17 @@ STATE_LABEL = {
     "holding": "🟢 持仓",
 }
 
+# 信号 → 一行 status 用的 emoji（统一从信号系统映射，避免重复判断阈值）
+SIGNAL_EMOJI = {
+    "entry": "🟢",
+    "warn_entry": "🔔",
+    "wait": "",
+    "reduce": "⚠",
+    "warn_reduce": "🔔",
+    "switch": "🔄",
+    "hold": "✅",
+}
+
 
 def format_signals_section(signals: list[Signal], state: str) -> str:
     if not signals:
@@ -120,11 +131,13 @@ def generate_report(
         lines.append(_option_table(opt))
         lines.append("")
 
-    # 操作建议
+    # 操作建议（最小 priority 的所有信号都展示，避免同 priority 多信号丢一个）
     if signals:
-        top = min(signals, key=lambda s: s.priority)
+        top_priority = min(s.priority for s in signals)
+        top_sigs = [s for s in signals if s.priority == top_priority]
         lines.append("## 操作建议")
-        lines.append(top.suggestion)
+        for s in top_sigs:
+            lines.append(f"- {s.suggestion}")
         lines.append("")
 
     # 持仓盈亏（holding 状态）
@@ -144,29 +157,16 @@ def render_status_line(
     signal_type: str, active_discount: float,
 ) -> str:
     """status 子命令一行输出。active_discount 由调用方通过 _extract_signal_metrics 算好，
-    避免重复实现 fallback 逻辑（当月已交割 → 下月）。
+    避免重复实现 fallback 逻辑（当月已交割 → 下月）。emoji 直接从 signal_type 映射，
+    避免在这里重复判断阈值（升水/switch 状态也能正确反映）。
     """
     state = position.status
     state_cn = "空仓" if state == "empty" else "持仓"
     close = metrics.get("close", 0)
     pe = metrics.get("pe_ttm", 0)
     pe_pct = metrics.get("pe_ttm_pct", {}).get("10y", 0)
-    # emoji 按持仓状态分语义：空仓看入场侧，持仓看减仓侧
-    if state == "empty":
-        if pe_pct < 50:
-            warn = "🟢"   # 接近入场
-        elif pe_pct < 60:
-            warn = "🔔"   # 预警入场
-        else:
-            warn = ""
-    else:  # holding
-        if pe_pct > 85:
-            warn = "⚠"    # 减仓
-        elif pe_pct > 75:
-            warn = "🔔"   # 预警减仓
-        else:
-            warn = ""
+    emoji = SIGNAL_EMOJI.get(signal_type, "")
 
     return (f"{report_date} | {state_cn} | {close:.0f}点 | "
-            f"PE_TTM {pe:.1f} ({pe_pct:.1f}%{warn}) | "
+            f"PE_TTM {pe:.1f} ({pe_pct:.1f}%{emoji}) | "
             f"当月贴水 {active_discount:+.1f}% | 信号: {signal_type}")
