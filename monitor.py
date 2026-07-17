@@ -31,31 +31,41 @@ def _ensure_config() -> Config:
     return load_config(CONFIG_PATH)
 
 
-def _resolve_trade_date(explicit: date | None, spot_close: float,
+def _resolve_trade_date(spot_close: float,
                         max_lookback: int = 7) -> tuple[date, list[dict]]:
-    """返回 (交易日, 当日合约列表)。explicit 优先，否则从今天起向前回退最多 max_lookback 天。
+    """返回 (交易日, 当日合约列表)。从今天起向前回退最多 max_lookback 天。
 
     CFFEX 当日数据通常要下午 3 点后才发布；凌晨/早盘跑 scan 时自动用上一交易日。
     顺带把合约数据带回，避免 cmd_scan 二次拉取。
     """
-    candidates = [explicit] if explicit else \
-        [date.today() - timedelta(days=i) for i in range(max_lookback + 1)]
-    for d in candidates:
+    for i in range(max_lookback + 1):
+        d = date.today() - timedelta(days=i)
         contracts = fetch_daily_contracts(d, spot_close)
         if contracts:
             return d, contracts
-    return (explicit or date.today(), [])
+    return (date.today(), [])
 
 
-def _extract_signal_metrics(metrics: dict) -> dict:
-    """从 metrics 抽出 signals.evaluate 需要的指标 dict。"""
+def _extract_signal_metrics(metrics: dict, switch_days: int = 7) -> dict:
+    """从 metrics 抽出 signals.evaluate 需要的指标 dict。
+
+    当月临近交割（剩余天数 < switch_days，含已交割 days=0）时，
+    信号判定 fallback 到下月合约 —— 和 switch_signal 持仓侧切换规则对齐，
+    也保证入场信号参考的是"实际可交易"的近月合约。
+    """
     contracts = metrics.get("contracts", [])
     cur_month = next(
         (c for c in contracts if c["contract_type"] == "当月"), None)
+    next_month = next(
+        (c for c in contracts if c["contract_type"] == "下月"), None)
+    if cur_month and cur_month.get("days_to_expire", 999) < switch_days and next_month:
+        active = next_month
+    else:
+        active = cur_month
     return {
         "pe_ttm_pct_10y": metrics["pe_ttm_pct"].get("10y", 100),
-        "current_month_discount": cur_month["annualized_discount"] if cur_month else 0,
-        "current_month_days": cur_month["days_to_expire"] if cur_month else 999,
+        "current_month_discount": active["annualized_discount"] if active else 0,
+        "current_month_days": active["days_to_expire"] if active else 999,
     }
 
 
@@ -79,20 +89,8 @@ def cmd_scan(args) -> int:
         return 1
     spot_close = latest["close"]
 
-    explicit = getattr(args, "date", None)
-    if explicit:
-        try:
-            explicit = datetime.strptime(explicit, "%Y-%m-%d").date()
-        except ValueError:
-            print(f"[ERR] --date 格式应为 YYYY-MM-DD，收到: {explicit}",
-                  file=sys.stderr)
-            return 1
-
-    today, cached_contracts = _resolve_trade_date(explicit, spot_close)
-    if explicit and explicit != today:
-        print(f"[WARN] {explicit} 无 IM 合约数据，回退到 {today}",
-              file=sys.stderr)
-    elif not explicit and today != date.today():
+    today, cached_contracts = _resolve_trade_date(spot_close)
+    if today != date.today():
         print(f"[INFO] 今日 CFFEX 数据未发布，使用 {today}", file=sys.stderr)
 
     print("[2/3] 拉取主力连续 IM0...", flush=True)
@@ -177,7 +175,7 @@ def cmd_report(args) -> int:
         print("[ERR] DB 无数据，请先运行 scan", file=sys.stderr)
         return 1
 
-    sigs = evaluate(cfg.position.status, _extract_signal_metrics(metrics), cfg.thresholds)
+    sigs = evaluate(cfg.position.status, _extract_signal_metrics(metrics, cfg.thresholds.switch_days), cfg.thresholds)
 
     # 写入 signals 表
     for s in sigs:
@@ -210,7 +208,7 @@ def cmd_status(args) -> int:
         print("[ERR] DB 无数据，请先运行 scan", file=sys.stderr)
         return 1
 
-    sigs = evaluate(cfg.position.status, _extract_signal_metrics(metrics), cfg.thresholds)
+    sigs = evaluate(cfg.position.status, _extract_signal_metrics(metrics, cfg.thresholds.switch_days), cfg.thresholds)
     top = min(sigs, key=lambda s: s.priority) if sigs else None
     sig_type = top.type if top else "none"
 
@@ -228,7 +226,6 @@ def main() -> int:
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p_scan = sub.add_parser("scan", help="拉数据入库")
-    p_scan.add_argument("--date", help="指定交易日 YYYY-MM-DD；不传则自动回退到最近有数据的交易日")
     sub.add_parser("report", help="生成 Markdown 报告")
     sub.add_parser("status", help="一行快速查状态")
     sub.add_parser("run", help="scan + report 一键")

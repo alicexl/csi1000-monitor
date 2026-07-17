@@ -58,6 +58,39 @@ class TestEmptyState(unittest.TestCase):
         types = [s.type for s in sigs]
         self.assertIn("wait", types)
 
+    def test_wait_zone_observation(self):
+        """60-75% 观望区文案"""
+        sigs = evaluate(EMPTY, make_metrics(pe_pct=70, discount=8), self.t)
+        wait = next(s for s in sigs if s.type == "wait")
+        self.assertIn("观望区", wait.condition)
+        self.assertIn("已达标", wait.condition)
+
+    def test_wait_zone_high(self):
+        """75-85% 偏高区文案"""
+        sigs = evaluate(EMPTY, make_metrics(pe_pct=80, discount=3), self.t)
+        wait = next(s for s in sigs if s.type == "wait")
+        self.assertIn("偏高", wait.condition)
+        self.assertIn("不足", wait.condition)
+
+    def test_wait_zone_excessive(self):
+        """>=85% 过高区文案（空仓状态下不触发 reduce，但文案要体现）"""
+        sigs = evaluate(EMPTY, make_metrics(pe_pct=90, discount=8), self.t)
+        wait = next(s for s in sigs if s.type == "wait")
+        self.assertIn("过高", wait.condition)
+
+    def test_wait_discount_tag(self):
+        """wait 信号附带贴水状态：贴水足 vs 不足"""
+        sigs_hi = evaluate(EMPTY, make_metrics(pe_pct=70, discount=8), self.t)
+        self.assertIn("已达标", next(s for s in sigs_hi if s.type == "wait").condition)
+        sigs_lo = evaluate(EMPTY, make_metrics(pe_pct=70, discount=3), self.t)
+        self.assertIn("不足", next(s for s in sigs_lo if s.type == "wait").condition)
+
+    def test_warn_entry_pe_in_zone_with_discount(self):
+        """warn_entry 接近入场分支带贴水状态"""
+        sigs = evaluate(EMPTY, make_metrics(pe_pct=55, discount=8), self.t)
+        we = next(s for s in sigs if s.type == "warn_entry")
+        self.assertIn("已达标", we.condition)
+
 
 class TestHoldingState(unittest.TestCase):
     def setUp(self):

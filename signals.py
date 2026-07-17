@@ -37,9 +37,14 @@ def _warn_entry_signal(metrics: dict, t: Thresholds) -> Signal | None:
     discount_low = pe < t.entry_pe_pct and disc <= t.entry_discount
     if pe_in_zone or discount_low:
         if pe_in_zone:
-            cond = f"PE_TTM 分位 {pe:.1f}% 在 {t.entry_pe_pct}-{t.warn_entry_pe_pct}% 区间（接近入场）"
+            disc_tag = (f"贴水 {disc:.1f}% 已达标"
+                        if disc > t.entry_discount
+                        else f"贴水 {disc:.1f}% 还不足（≤{t.entry_discount}%）")
+            cond = (f"PE_TTM 分位 {pe:.1f}% 在 {t.entry_pe_pct}-{t.warn_entry_pe_pct}% 区间"
+                    f"（接近入场）；{disc_tag}")
         else:
-            cond = f"PE_TTM {pe:.1f}% < {t.entry_pe_pct}% 但贴水 {disc:.1f}% ≤ {t.entry_discount}%（贴水不够）"
+            cond = (f"PE_TTM {pe:.1f}% < {t.entry_pe_pct}% 但贴水 {disc:.1f}% "
+                    f"≤ {t.entry_discount}%（贴水不够）")
         return Signal(
             type="warn_entry", priority=4,
             condition=cond,
@@ -52,11 +57,26 @@ def _warn_entry_signal(metrics: dict, t: Thresholds) -> Signal | None:
 
 def _wait_signal(metrics: dict, t: Thresholds) -> Signal:
     pe = metrics["pe_ttm_pct_10y"]
+    disc = metrics["current_month_discount"]
+    # 按 pe 实际区间分段（复用持仓侧阈值，空仓/持仓语义一致）
+    if pe >= t.reduce_pe_pct:
+        zone = f"过高（≥{t.reduce_pe_pct}%），等待估值回落"
+    elif pe >= t.warn_reduce_pe_pct:
+        zone = f"偏高（{t.warn_reduce_pe_pct}-{t.reduce_pe_pct}%），不宜入场"
+    else:
+        zone = f"观望区（{t.warn_entry_pe_pct}-{t.warn_reduce_pe_pct}%）"
+    # 附带贴水维度：pe 高 + 贴水足 vs pe 高 + 贴水不足 是不同状态
+    disc_tag = (f"贴水 {disc:.1f}% 已达标（>{t.entry_discount}%）"
+                if disc > t.entry_discount
+                else f"贴水 {disc:.1f}% 也不足（≤{t.entry_discount}%）")
     return Signal(
         type="wait", priority=5,
-        condition=f"PE_TTM 分位 {pe:.1f}% ≥ {t.warn_entry_pe_pct}%，未达入场区",
-        current={"pe_ttm_pct_10y": pe},
-        threshold={"warn_entry_pe_pct": t.warn_entry_pe_pct},
+        condition=f"PE_TTM 分位 {pe:.1f}% {zone}；{disc_tag}",
+        current={"pe_ttm_pct_10y": pe, "discount": disc},
+        threshold={"warn_entry_pe_pct": t.warn_entry_pe_pct,
+                   "warn_reduce_pe_pct": t.warn_reduce_pe_pct,
+                   "reduce_pe_pct": t.reduce_pe_pct,
+                   "entry_discount": t.entry_discount},
         suggestion="继续等待，不需要操作",
     )
 

@@ -149,7 +149,21 @@ def render_status_line(
     close = metrics.get("close", 0)
     pe = metrics.get("pe_ttm", 0)
     pe_pct = metrics.get("pe_ttm_pct", {}).get("10y", 0)
-    warn = "⚠" if pe_pct > 85 else ("🟢" if pe_pct < 50 else "")
+    # emoji 按持仓状态分语义：空仓看入场侧，持仓看减仓侧
+    if state == "empty":
+        if pe_pct < 50:
+            warn = "🟢"   # 接近入场
+        elif pe_pct < 60:
+            warn = "🔔"   # 预警入场
+        else:
+            warn = ""
+    else:  # holding
+        if pe_pct > 85:
+            warn = "⚠"    # 减仓
+        elif pe_pct > 75:
+            warn = "🔔"   # 预警减仓
+        else:
+            warn = ""
 
     contracts = metrics.get("contracts", [])
     cur_month = next(
