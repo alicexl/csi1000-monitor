@@ -81,15 +81,12 @@ PCT_WINDOWS = ["10y", "5y", "all"]
 
 ```
 csi1000-monitor/
-├── monitor.py          # CLI 入口（scan/report/status/run）+ 用户配置常量
+├── monitor.py          # CLI 入口 + 用户配置常量 + 多区间分位算法
 ├── db.py               # SQLite（WAL + thread-local 连接）
-├── data_fetcher.py     # akshare 拉取（PE/PB + 期货 + 期权）
-├── valuation.py        # 多区间历史分位
-├── basis.py            # 基差/年化贴水/合约分类
-├── options.py          # BS 定价 + IV + 卖 call 增厚分析
+├── data_fetcher.py     # akshare 拉取 + 基差/贴水/合约分类 + BS 定价/IV
 ├── signals.py          # 7 种信号判断矩阵 + Thresholds/Position 数据类
 ├── reporter.py         # Markdown 报告生成
-├── tests/              # 80 个单元测试 + E2E
+├── tests/              # 83 个单元测试 + E2E
 └── reports/            # Markdown 报告输出
 ```
 

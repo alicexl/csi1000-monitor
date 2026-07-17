@@ -8,7 +8,7 @@ from pathlib import Path
 
 from signals import evaluate, Position, Thresholds
 from db import init_db, upsert_valuation, upsert_contract
-from valuation import compute_pct_for_windows, pe_pb_divergence
+from monitor import compute_pct_for_windows, pe_pb_divergence
 from reporter import generate_report, render_status_line
 
 

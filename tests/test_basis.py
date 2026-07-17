@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from datetime import date
 
-from basis import (
+from data_fetcher import (
     compute_basis, compute_annualized_discount,
     third_friday, days_to_expire, classify_contract,
 )

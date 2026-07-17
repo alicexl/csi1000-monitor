@@ -1,21 +1,158 @@
 # data_fetcher.py
 from __future__ import annotations
+import calendar
+import math
 import time
 from datetime import date, datetime
 from typing import Any, Callable
 
 import akshare as ak
 
-from basis import (
-    classify_contract, days_to_expire, compute_basis,
-    compute_annualized_discount, third_friday,
-)
-from options import (
-    implied_vol, annualized_enhancement, prob_above_strike,
-    implied_forward,
-)
+
+# ─── 基差/贴水/合约分类（原 basis.py）─────────────────────────
+QUARTER_MONTHS = [3, 6, 9, 12]
 
 
+def compute_basis(futures_close: float, spot_close: float) -> float:
+    """基差 = 期货收盘 - 现货收盘。负值=贴水，正值=升水。"""
+    return futures_close - spot_close
+
+
+def compute_annualized_discount(
+    futures_close: float, spot_close: float, days_to_expire: int
+) -> float:
+    """年化贴水率 %。正值=贴水收益，负值=升水亏损。days=0 返回 0 防除零。"""
+    if days_to_expire <= 0 or spot_close == 0:
+        return 0.0
+    discount_rate = (spot_close - futures_close) / spot_close * 100
+    return discount_rate * 365 / days_to_expire
+
+
+def third_friday(year: int, month: int) -> date:
+    """某年月的第三个周五（中金所股指期货交割日）。"""
+    cal = calendar.Calendar()
+    fridays = [
+        d for d in cal.itermonthdates(year, month)
+        if d.month == month and d.weekday() == 4
+    ]
+    return fridays[2]
+
+
+def days_to_expire(today: date, expire_date: date) -> int:
+    """剩余天数（今日到交割日的日历天数）。"""
+    return (expire_date - today).days
+
+
+def classify_contract(
+    symbol: str, today: date
+) -> tuple[str | None, date | None]:
+    """识别 IM 合约类型（当月/下月/当季/下季）+ 交割日。非 IM 合约返回 (None, None)。"""
+    if not symbol.startswith("IM") or len(symbol) != 6:
+        return None, None
+    try:
+        yy = int(symbol[2:4])
+        mm = int(symbol[4:6])
+    except ValueError:
+        return None, None
+    if not (1 <= mm <= 12):
+        return None, None
+
+    year = 2000 + yy
+    expire = third_friday(year, mm)
+
+    today_yyyymm = today.year * 12 + today.month
+    contract_yyyymm = year * 12 + mm
+    if contract_yyyymm == today_yyyymm:
+        return "当月", expire
+    if contract_yyyymm == today_yyyymm + 1:
+        return "下月", expire
+
+    future_quarters = []
+    y, m = today.year, today.month
+    m += 1
+    if m > 12:
+        m = 1
+        y += 1
+    while len(future_quarters) < 4:
+        if m in QUARTER_MONTHS:
+            future_quarters.append((y, m))
+        m += 1
+        if m > 12:
+            m = 1
+            y += 1
+    for i, label in [(0, "当季"), (1, "下季")]:
+        if i < len(future_quarters):
+            qy, qm = future_quarters[i]
+            if qy == year and qm == mm:
+                return label, expire
+    return None, expire
+
+
+# ─── 期权 BS 定价（原 options.py）─────────────────────────────
+def _norm_cdf(x: float) -> float:
+    """标准正态分布 CDF（Abramowitz-Stegun 近似）。"""
+    return 0.5 * (1.0 + math.erf(x / math.sqrt(2)))
+
+
+def black_scholes_call(
+    S: float, K: float, T: float, r: float = 0.02, q: float = 0.015, sigma: float = 0.25
+) -> float:
+    """带股息率的 BS call 定价。T 为年化时间。"""
+    if T <= 0 or sigma <= 0:
+        return max(S * math.exp(-q * T) - K * math.exp(-r * T), 0.0)
+    sqrtT = math.sqrt(T)
+    d1 = (math.log(S / K) + (r - q + sigma ** 2 / 2) * T) / (sigma * sqrtT)
+    d2 = d1 - sigma * sqrtT
+    return S * math.exp(-q * T) * _norm_cdf(d1) - K * math.exp(-r * T) * _norm_cdf(d2)
+
+
+def implied_vol(
+    market_price: float, S: float, K: float, T: float,
+    r: float = 0.02, q: float = 0.015,
+) -> float:
+    """二分法反解 IV。市场价不合理时返回 0。"""
+    intrinsic = max(S * math.exp(-q * T) - K * math.exp(-r * T), 0.0)
+    if market_price <= intrinsic:
+        return 0.0
+    lo, hi = 0.005, 3.0
+    for _ in range(100):
+        mid = (lo + hi) / 2
+        price = black_scholes_call(S, K, T, r, q, mid)
+        if price < market_price:
+            lo = mid
+        else:
+            hi = mid
+        if hi - lo < 0.0001:
+            break
+    return (lo + hi) / 2
+
+
+def prob_above_strike(S: float, K: float, T: float, sigma: float,
+                      r: float = 0.02, q: float = 0.015) -> float:
+    """到期日 S_T > K 的风险中性概率（call 被行权概率）。"""
+    if T <= 0 or sigma <= 0:
+        return 1.0 if S > K else 0.0
+    sqrtT = math.sqrt(T)
+    d2 = (math.log(S / K) + (r - q - sigma ** 2 / 2) * T) / (sigma * sqrtT)
+    return _norm_cdf(d2)
+
+
+def annualized_enhancement(premium: float, spot: float, days: float) -> float:
+    """年化增厚率(%) = (premium / spot) × (365 / days) × 100。"""
+    if days <= 0 or spot <= 0:
+        return 0.0
+    return premium / spot * 365.0 / days * 100.0
+
+
+def implied_forward(call_price: float, put_price: float, K: float, T: float,
+                    r: float = 0.02) -> float:
+    """Put-Call Parity 反推远期: F = K + (C - P) × e^(rT)。"""
+    if T <= 0:
+        return K + call_price - put_price
+    return K + (call_price - put_price) * math.exp(r * T)
+
+
+# ─── akshare 拉取 ────────────────────────────────────────────
 def retry(fn: Callable, retries: int = 3, delays: tuple = (2, 4, 8)) -> Any:
     """指数退避重试。全部失败返回 None。"""
     last_err = None
