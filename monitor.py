@@ -176,7 +176,8 @@ def _build_metrics(conn) -> dict:
     return metrics
 
 
-def cmd_report(args) -> int:
+def _generate_report() -> int:
+    """读 DB → 评估信号 → 写 signals 表 + 生成 Markdown 报告。"""
     conn = init_db(DB_PATH)
     metrics = _build_metrics(conn)
     if not metrics:
@@ -224,7 +225,7 @@ def cmd_status(args) -> int:
     return 0
 
 
-COMMANDS = {"report": cmd_report, "status": cmd_status}
+COMMANDS = {"status": cmd_status}
 
 
 def cmd_run(args) -> int:
@@ -247,7 +248,7 @@ def cmd_run(args) -> int:
         rc = _scan()
         if rc:
             return rc
-    return cmd_report(args)
+    return _generate_report()
 
 
 def main() -> int:
@@ -255,9 +256,8 @@ def main() -> int:
         description="中证1000 贴水策略监控")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    sub.add_parser("report", help="生成 Markdown 报告（离线）")
+    sub.add_parser("run", help="自动拉数据 + 生成报告（DB 是最新则跳过拉取）")
     sub.add_parser("status", help="一行快速查状态（离线）")
-    sub.add_parser("run", help="自动拉数据 + 报告（DB 是最新则跳过拉取）")
 
     args = parser.parse_args()
     if args.cmd == "run":
