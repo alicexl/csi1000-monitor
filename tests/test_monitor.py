@@ -1,10 +1,14 @@
 # tests/test_monitor.py
 from __future__ import annotations
 import unittest
+import tempfile
+import os
+from pathlib import Path
 from datetime import date
 from unittest.mock import patch
 
-from monitor import _extract_signal_metrics, _target_trade_date
+from monitor import _extract_signal_metrics, _target_trade_date, _load_position, cmd_open, cmd_close
+from db import init_db, load_position
 
 
 def _contract(ctype, disc, days):
@@ -88,6 +92,78 @@ class TestTargetTradeDate(unittest.TestCase):
             mock_date.today.return_value = date(2026, 7, 19)  # Sunday
             mock_date.side_effect = lambda *a, **k: date(*a, **k)
             self.assertEqual(_target_trade_date(), date(2026, 7, 17))
+
+
+class TestPositionPersistence(unittest.TestCase):
+    """cmd_open / cmd_close / _load_position 集成测试（隔离 DB_PATH）"""
+
+    def setUp(self):
+        self._fd, self.path = tempfile.mkstemp(suffix=".db")
+        os.close(self._fd)
+        self._db_patch = patch("monitor.DB_PATH", Path(self.path))
+        self._db_patch.start()
+
+    def tearDown(self):
+        self._db_patch.stop()
+        if os.path.exists(self.path):
+            os.unlink(self.path)
+
+    def test_load_empty_returns_default(self):
+        """空表 → 默认 Position(status='empty')"""
+        conn = init_db(Path(self.path))
+        pos = _load_position(conn)
+        self.assertEqual(pos.status, "empty")
+        self.assertIsNone(pos.contract)
+        conn.close()
+
+    def test_cmd_open_then_load(self):
+        """open IM2608 7000 → load 出来字段一致"""
+        class Args:
+            contract = "IM2608"
+            entry_price = 7000.0
+            entry_date = "2026-07-18"
+        rc = cmd_open(Args())
+        self.assertEqual(rc, 0)
+        conn = init_db(Path(self.path))
+        pos = _load_position(conn)
+        self.assertEqual(pos.status, "holding")
+        self.assertEqual(pos.contract, "IM2608")
+        self.assertAlmostEqual(pos.entry_price, 7000.0)
+        self.assertEqual(pos.entry_date, "2026-07-18")
+        conn.close()
+
+    def test_cmd_close_clears_position(self):
+        """open 后 close → 回到 empty"""
+        class ArgsOpen:
+            contract = "IM2608"
+            entry_price = 7000.0
+            entry_date = "2026-07-18"
+        cmd_open(ArgsOpen())
+        rc = cmd_close(None)
+        self.assertEqual(rc, 0)
+        conn = init_db(Path(self.path))
+        pos = _load_position(conn)
+        self.assertEqual(pos.status, "empty")
+        self.assertIsNone(pos.contract)
+        conn.close()
+
+    def test_open_replaces_previous(self):
+        """第二次 open 覆盖第一次"""
+        class Args1:
+            contract = "IM2608"
+            entry_price = 7000.0
+            entry_date = "2026-07-18"
+        class Args2:
+            contract = "IM2609"
+            entry_price = 6800.0
+            entry_date = "2026-08-15"
+        cmd_open(Args1())
+        cmd_open(Args2())
+        conn = init_db(Path(self.path))
+        pos = _load_position(conn)
+        self.assertEqual(pos.contract, "IM2609")
+        self.assertAlmostEqual(pos.entry_price, 6800.0)
+        conn.close()
 
 
 if __name__ == "__main__":

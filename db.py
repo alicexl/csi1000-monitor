@@ -49,6 +49,15 @@ CREATE TABLE IF NOT EXISTS signals (
     created_at    TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS position (
+    id          INTEGER PRIMARY KEY CHECK (id = 1),
+    status      TEXT NOT NULL,
+    contract    TEXT,
+    entry_date  TEXT,
+    entry_price REAL,
+    updated_at  TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_valuation_date ON daily_valuation(date);
 CREATE INDEX IF NOT EXISTS idx_contracts_date ON daily_contracts(date);
 CREATE INDEX IF NOT EXISTS idx_signals_date ON signals(date);
@@ -149,3 +158,22 @@ def query_latest_signals(conn: sqlite3.Connection, days: int = 30) -> list[dict[
     cur = conn.execute(
         "SELECT * FROM signals WHERE date >= ? ORDER BY date DESC", (cutoff,))
     return [dict(r) for r in cur.fetchall()]
+
+
+def load_position(conn: sqlite3.Connection) -> dict[str, Any] | None:
+    """读 position 表的单行记录。空表返回 None。"""
+    cur = conn.execute("SELECT status, contract, entry_date, entry_price "
+                       "FROM position WHERE id = 1")
+    row = cur.fetchone()
+    return dict(row) if row else None
+
+
+def save_position(conn: sqlite3.Connection, row: dict[str, Any]) -> None:
+    """INSERT OR REPLACE id=1。row 必须含 status/contract/entry_date/entry_price + updated_at。"""
+    conn.execute(
+        "INSERT OR REPLACE INTO position "
+        "(id, status, contract, entry_date, entry_price, updated_at) "
+        "VALUES (1, :status, :contract, :entry_date, :entry_price, :updated_at)",
+        row,
+    )
+    conn.commit()

@@ -51,20 +51,23 @@ python monitor.py status
 |---|---|
 | `run` | 自动判断：DB 数据是最新（≥目标交易日）则跳过拉取，否则先拉数据，再生成报告 |
 | `status` | 一行快速查当前信号 |
+| `open <contract> <entry_price> [entry_date]` | 开仓：记录合约/入场价/日期到 DB |
+| `close` | 平仓：清空持仓 |
+
+持仓状态持久化在 SQLite 的 `position` 表（单行），所有命令读 DB 决定空仓/持仓分支。开仓后 `run` 会自动在报告里显示持仓盈亏。
 
 `run` 是幂等的：同一天重复跑只会在第一次拉数据，之后直接读 DB 离线生成报告。
 
 ## 配置
 
-直接编辑 `monitor.py` 顶部的常量：
+阈值和分位窗口在 `monitor.py` 顶部：
 
 ```python
-POSITION = Position(status="empty")  # 开仓后改 "holding" + 填 contract/entry_date/entry_price
 THRESHOLDS = Thresholds()             # 策略阈值（默认值见 signals.py）
 PCT_WINDOWS = ["10y", "5y", "all"]
 ```
 
-报告内容会根据持仓状态自动调整：空仓展示入场条件距离，持仓展示减仓/切换/盈亏。
+**持仓状态不在代码里**——用 `open`/`close` 子命令持久化到 DB。
 
 ## Claude Code Skill（可选）
 

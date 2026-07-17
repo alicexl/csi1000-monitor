@@ -10,15 +10,66 @@ from db import (
     init_db, upsert_valuation, upsert_contract,
     insert_signal, query_latest_valuation, query_valuation_history,
     query_contracts_by_date, query_main_continuous_history,
+    load_position, save_position,
     SCHEMA,
 )
 
 
 class TestSchema(unittest.TestCase):
-    def test_schema_contains_three_tables(self):
+    def test_schema_contains_four_tables(self):
         self.assertIn("daily_valuation", SCHEMA)
         self.assertIn("daily_contracts", SCHEMA)
         self.assertIn("signals", SCHEMA)
+        self.assertIn("position", SCHEMA)
+
+
+class TestPositionCRUD(unittest.TestCase):
+    def setUp(self):
+        self._fd, self.path = tempfile.mkstemp(suffix=".db")
+        os.close(self._fd)
+        self.conn = init_db(Path(self.path))
+
+    def tearDown(self):
+        self.conn.close()
+        os.unlink(self.path)
+
+    def test_load_empty_returns_none(self):
+        """空表返回 None"""
+        self.assertIsNone(load_position(self.conn))
+
+    def test_save_then_load_roundtrip(self):
+        """保存后读取应一致"""
+        save_position(self.conn, {
+            "status": "holding",
+            "contract": "IM2608",
+            "entry_date": "2026-07-18",
+            "entry_price": 7000.0,
+            "updated_at": "2026-07-18T10:00:00",
+        })
+        row = load_position(self.conn)
+        self.assertEqual(row["status"], "holding")
+        self.assertEqual(row["contract"], "IM2608")
+        self.assertEqual(row["entry_date"], "2026-07-18")
+        self.assertAlmostEqual(row["entry_price"], 7000.0)
+
+    def test_save_replaces_single_row(self):
+        """多次 save 只保留一行（id=1 约束）"""
+        save_position(self.conn, {
+            "status": "holding", "contract": "IM2608",
+            "entry_date": "2026-07-18", "entry_price": 7000.0,
+            "updated_at": "2026-07-18T10:00:00",
+        })
+        save_position(self.conn, {
+            "status": "empty", "contract": None,
+            "entry_date": None, "entry_price": None,
+            "updated_at": "2026-07-20T10:00:00",
+        })
+        row = load_position(self.conn)
+        self.assertEqual(row["status"], "empty")
+        self.assertIsNone(row["contract"])
+        # 验证只有 1 行
+        cnt = self.conn.execute("SELECT COUNT(*) FROM position").fetchone()[0]
+        self.assertEqual(cnt, 1)
 
 
 class TestValuationCRUD(unittest.TestCase):

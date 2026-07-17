@@ -9,6 +9,7 @@ from db import (
     init_db, upsert_valuation, upsert_contract, insert_signal,
     query_latest_valuation, query_valuation_history,
     query_contracts_by_date, query_main_continuous_history,
+    load_position, save_position,
 )
 from data_fetcher import fetch_valuation, fetch_main_continuous, fetch_daily_contracts, fetch_otm_call
 from signals import evaluate, Thresholds, Position
@@ -70,15 +71,24 @@ ROOT = Path(__file__).parent
 DB_PATH = ROOT / "csi1000_monitor.db"
 REPORTS_DIR = ROOT / "reports"
 
-# ─── 用户可编辑状态 ───────────────────────────────────────────
-# 开仓后手动改 status="holding" + 填写 contract/entry_date/entry_price
-POSITION = Position(status="empty")
-
-# 策略阈值（需要调参时改这里）
+# ─── 策略阈值（需要调参时改这里）─────────────────────────────
 THRESHOLDS = Thresholds()
 
 # 估值分位计算窗口
 PCT_WINDOWS = ["10y", "5y", "all"]
+
+
+def _load_position(conn) -> Position:
+    """从 DB 加载持仓状态；空表返回默认 Position()。"""
+    row = load_position(conn)
+    if row is None:
+        return Position()
+    return Position(
+        status=row["status"],
+        contract=row["contract"],
+        entry_date=row["entry_date"],
+        entry_price=row["entry_price"],
+    )
 
 
 def _resolve_trade_date(spot_close: float,
@@ -230,12 +240,13 @@ def _build_metrics(conn) -> dict:
 def _generate_report() -> int:
     """读 DB → 评估信号 → 写 signals 表 + 生成 Markdown 报告。"""
     conn = init_db(DB_PATH)
+    position = _load_position(conn)
     metrics = _build_metrics(conn)
     if not metrics:
         print("[ERR] DB 无数据，请先运行 run", file=sys.stderr)
         return 1
 
-    sigs = evaluate(POSITION.status, _extract_signal_metrics(metrics, THRESHOLDS.switch_days), THRESHOLDS)
+    sigs = evaluate(position.status, _extract_signal_metrics(metrics, THRESHOLDS.switch_days), THRESHOLDS)
 
     # 写入 signals 表
     for s in sigs:
@@ -250,7 +261,7 @@ def _generate_report() -> int:
         })
 
     # 生成报告
-    report = generate_report(metrics["date"], POSITION, metrics, sigs)
+    report = generate_report(metrics["date"], position, metrics, sigs)
     REPORTS_DIR.mkdir(exist_ok=True)
     out_path = REPORTS_DIR / f"csi1000_{metrics['date']}.md"
     out_path.write_text(report, encoding="utf-8")
@@ -262,17 +273,18 @@ def _generate_report() -> int:
 
 def cmd_status() -> int:
     conn = init_db(DB_PATH)
+    position = _load_position(conn)
     metrics = _build_metrics(conn)
     if not metrics:
         print("[ERR] DB 无数据，请先运行 run", file=sys.stderr)
         return 1
 
     sig_metrics = _extract_signal_metrics(metrics, THRESHOLDS.switch_days)
-    sigs = evaluate(POSITION.status, sig_metrics, THRESHOLDS)
+    sigs = evaluate(position.status, sig_metrics, THRESHOLDS)
     top = min(sigs, key=lambda s: s.priority) if sigs else None
     sig_type = top.type if top else "none"
 
-    print(render_status_line(metrics["date"], POSITION, metrics, sig_type,
+    print(render_status_line(metrics["date"], position, metrics, sig_type,
                              sig_metrics["current_month_discount"]))
     conn.close()
     return 0
@@ -301,6 +313,37 @@ def cmd_run() -> int:
     return _generate_report()
 
 
+def cmd_open(args) -> int:
+    """开仓：写入 status=holding + contract/entry_price/entry_date。"""
+    conn = init_db(DB_PATH)
+    entry_date = args.entry_date or date.today().isoformat()
+    save_position(conn, {
+        "status": "holding",
+        "contract": args.contract,
+        "entry_date": entry_date,
+        "entry_price": args.entry_price,
+        "updated_at": datetime.now().isoformat(timespec="seconds"),
+    })
+    print(f"[OK] 已开仓: {args.contract} @ {args.entry_price} ({entry_date})")
+    conn.close()
+    return 0
+
+
+def cmd_close(args) -> int:
+    """平仓：写入 status=empty，清空合约信息。"""
+    conn = init_db(DB_PATH)
+    save_position(conn, {
+        "status": "empty",
+        "contract": None,
+        "entry_date": None,
+        "entry_price": None,
+        "updated_at": datetime.now().isoformat(timespec="seconds"),
+    })
+    print("[OK] 已平仓")
+    conn.close()
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="中证1000 贴水策略监控")
@@ -309,10 +352,23 @@ def main() -> int:
     sub.add_parser("run", help="自动拉数据 + 生成报告（DB 是最新则跳过拉取）")
     sub.add_parser("status", help="一行快速查状态（离线）")
 
+    p_open = sub.add_parser("open", help="开仓：记录合约/入场价/日期")
+    p_open.add_argument("contract", help="合约代码，如 IM2608")
+    p_open.add_argument("entry_price", type=float, help="入场价")
+    p_open.add_argument("entry_date", nargs="?", help="入场日期 YYYY-MM-DD（默认今天）")
+
+    sub.add_parser("close", help="平仓")
+
     args = parser.parse_args()
     if args.cmd == "run":
         return cmd_run()
-    return cmd_status()
+    if args.cmd == "status":
+        return cmd_status()
+    if args.cmd == "open":
+        return cmd_open(args)
+    if args.cmd == "close":
+        return cmd_close(args)
+    return 1
 
 
 if __name__ == "__main__":

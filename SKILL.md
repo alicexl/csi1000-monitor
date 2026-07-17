@@ -67,13 +67,16 @@ cd D:/workspace/csi1000-monitor && python monitor.py run 2>&1 | grep -v "UserWar
 
 ## 配置
 
-持仓状态和阈值在 `D:/workspace/csi1000-monitor/monitor.py` 顶部：
+阈值在 `D:/workspace/csi1000-monitor/monitor.py` 顶部（`THRESHOLDS` / `PCT_WINDOWS`）。
 
-- `POSITION = Position(status="empty")` — `empty`（空仓）| `holding`（持仓）
-- `THRESHOLDS = Thresholds()` — 默认阈值（定义见 `signals.py`）
-- `PCT_WINDOWS = ["10y", "5y", "all"]`
+**持仓状态用 CLI 子命令持久化到 SQLite**：
 
-**重要**：用户实际开仓后必须手动改 `POSITION.status = "holding"`，报告逻辑会切换（空仓看入场条件，持仓看减仓/切换）。
+```bash
+python monitor.py open IM2608 7000 2026-07-18   # 开仓
+python monitor.py close                          # 平仓
+```
+
+所有命令读 DB 决定空仓/持仓分支；报告逻辑会自动切换（空仓看入场条件，持仓看减仓/切换/盈亏）。
 
 ## 常见问题
 
