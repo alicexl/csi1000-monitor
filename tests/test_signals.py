@@ -21,20 +21,26 @@ class TestEmptyState(unittest.TestCase):
         self.t = Thresholds()
 
     def test_entry_signal(self):
-        """PE<50 且 贴水>5 → entry"""
+        """PE<50 且 贴水>0 → entry"""
         sigs = evaluate(EMPTY, make_metrics(pe_pct=40, discount=8), self.t)
         types = [s.type for s in sigs]
         self.assertIn("entry", types)
 
-    def test_entry_boundary_strict_lt(self):
+    def test_entry_boundary_strict_lt_pe(self):
         """PE=50（严格 <50）不触发 entry"""
         sigs = evaluate(EMPTY, make_metrics(pe_pct=50, discount=8), self.t)
         types = [s.type for s in sigs]
         self.assertNotIn("entry", types)
 
     def test_entry_boundary_strict_gt_discount(self):
-        """贴水=5（严格 >5）不触发 entry"""
-        sigs = evaluate(EMPTY, make_metrics(pe_pct=40, discount=5), self.t)
+        """贴水=0（严格 >0）不触发 entry"""
+        sigs = evaluate(EMPTY, make_metrics(pe_pct=40, discount=0), self.t)
+        types = [s.type for s in sigs]
+        self.assertNotIn("entry", types)
+
+    def test_entry_negative_discount_not_trigger(self):
+        """贴水<0（升水）不触发 entry"""
+        sigs = evaluate(EMPTY, make_metrics(pe_pct=40, discount=-1), self.t)
         types = [s.type for s in sigs]
         self.assertNotIn("entry", types)
 
@@ -44,9 +50,9 @@ class TestEmptyState(unittest.TestCase):
         types = [s.type for s in sigs]
         self.assertIn("warn_entry", types)
 
-    def test_warn_entry_discount_low(self):
-        """PE<50 但贴水<=5 → warn_entry（估值到但贴水不够）"""
-        sigs = evaluate(EMPTY, make_metrics(pe_pct=40, discount=3), self.t)
+    def test_warn_entry_premium_state(self):
+        """PE<50 但贴水<=0（升水状态）→ warn_entry（估值到但贴水失效）"""
+        sigs = evaluate(EMPTY, make_metrics(pe_pct=40, discount=-1), self.t)
         types = [s.type for s in sigs]
         self.assertIn("warn_entry", types)
         self.assertNotIn("entry", types)
@@ -62,14 +68,14 @@ class TestEmptyState(unittest.TestCase):
         sigs = evaluate(EMPTY, make_metrics(pe_pct=70, discount=8), self.t)
         wait = next(s for s in sigs if s.type == "wait")
         self.assertIn("观望区", wait.condition)
-        self.assertIn("已达标", wait.condition)
+        self.assertIn("可吃", wait.condition)
 
     def test_wait_zone_high(self):
         """75-85% 偏高区文案"""
         sigs = evaluate(EMPTY, make_metrics(pe_pct=80, discount=3), self.t)
         wait = next(s for s in sigs if s.type == "wait")
         self.assertIn("偏高", wait.condition)
-        self.assertIn("不足", wait.condition)
+        self.assertIn("可吃", wait.condition)
 
     def test_wait_zone_excessive(self):
         """>=85% 过高区文案（空仓状态下不触发 reduce，但文案要体现）"""
@@ -78,34 +84,68 @@ class TestEmptyState(unittest.TestCase):
         self.assertIn("过高", wait.condition)
 
     def test_wait_discount_tag(self):
-        """wait 信号附带贴水状态：贴水足 vs 不足"""
+        """wait 信号附带贴水状态：可吃 vs 升水"""
         sigs_hi = evaluate(EMPTY, make_metrics(pe_pct=70, discount=8), self.t)
-        self.assertIn("已达标", next(s for s in sigs_hi if s.type == "wait").condition)
-        sigs_lo = evaluate(EMPTY, make_metrics(pe_pct=70, discount=3), self.t)
-        self.assertIn("不足", next(s for s in sigs_lo if s.type == "wait").condition)
+        self.assertIn("可吃", next(s for s in sigs_hi if s.type == "wait").condition)
+        sigs_lo = evaluate(EMPTY, make_metrics(pe_pct=70, discount=-1), self.t)
+        self.assertIn("升水", next(s for s in sigs_lo if s.type == "wait").condition)
 
     def test_warn_entry_pe_in_zone_with_discount(self):
-        """warn_entry 接近入场分支带贴水状态"""
+        """warn_entry 接近入场分支带贴水状态（贴水>0）"""
         sigs = evaluate(EMPTY, make_metrics(pe_pct=55, discount=8), self.t)
         we = next(s for s in sigs if s.type == "warn_entry")
         self.assertIn("已达标", we.condition)
+
+    def test_warn_entry_pe_in_zone_premium(self):
+        """warn_entry 接近入场分支带贴水状态（升水）"""
+        sigs = evaluate(EMPTY, make_metrics(pe_pct=55, discount=-1), self.t)
+        we = next(s for s in sigs if s.type == "warn_entry")
+        self.assertIn("升水", we.condition)
 
 
 class TestHoldingState(unittest.TestCase):
     def setUp(self):
         self.t = Thresholds()
 
-    def test_reduce_signal(self):
-        """PE>85 → reduce"""
+    def test_reduce_pe_signal(self):
+        """PE>85 → reduce（估值维度）"""
         sigs = evaluate(HOLDING, make_metrics(pe_pct=90, discount=8), self.t)
         types = [s.type for s in sigs]
         self.assertIn("reduce", types)
 
-    def test_reduce_boundary_strict_gt(self):
+    def test_reduce_pe_boundary_strict_gt(self):
         """PE=85（严格 >85）不触发 reduce"""
         sigs = evaluate(HOLDING, make_metrics(pe_pct=85, discount=8), self.t)
         types = [s.type for s in sigs]
         self.assertNotIn("reduce", types)
+
+    def test_reduce_basis_signal_zero(self):
+        """贴水=0 → reduce（贴水维度，平水也算失效）"""
+        sigs = evaluate(HOLDING, make_metrics(pe_pct=50, discount=0), self.t)
+        types = [s.type for s in sigs]
+        self.assertIn("reduce", types)
+
+    def test_reduce_basis_signal_negative(self):
+        """贴水<0（升水）→ reduce"""
+        sigs = evaluate(HOLDING, make_metrics(pe_pct=50, discount=-2), self.t)
+        types = [s.type for s in sigs]
+        self.assertIn("reduce", types)
+
+    def test_reduce_basis_not_trigger_when_positive(self):
+        """贴水>0（有贴水）→ 不触发 reduce"""
+        sigs = evaluate(HOLDING, make_metrics(pe_pct=50, discount=3), self.t)
+        types = [s.type for s in sigs]
+        self.assertNotIn("reduce", types)
+
+    def test_reduce_pe_and_basis_coexist(self):
+        """PE>85 且 贴水<=0 → 两个 reduce 都触发"""
+        sigs = evaluate(HOLDING, make_metrics(pe_pct=90, discount=-1), self.t)
+        reduce_sigs = [s for s in sigs if s.type == "reduce"]
+        self.assertEqual(len(reduce_sigs), 2)
+        # 一个 condition 含 PE，一个含贴水
+        conds = " | ".join(s.condition for s in reduce_sigs)
+        self.assertIn("PE_TTM", conds)
+        self.assertIn("贴水", conds)
 
     def test_warn_reduce(self):
         """PE 在 75-85% → warn_reduce"""
@@ -126,12 +166,18 @@ class TestHoldingState(unittest.TestCase):
         self.assertNotIn("switch", types)
 
     def test_hold_signal(self):
-        """PE<=75 且 天数>=7 → hold"""
+        """PE<=75 且 天数>=7 且 贴水>0 → hold"""
         sigs = evaluate(HOLDING, make_metrics(pe_pct=50, discount=8, days=20), self.t)
         types = [s.type for s in sigs]
         self.assertIn("hold", types)
 
-    def test_reduce_and_switch_can_coexist(self):
+    def test_hold_not_trigger_on_premium(self):
+        """升水状态（disc<=0）→ 不触发 hold（已被 reduce_basis 占据）"""
+        sigs = evaluate(HOLDING, make_metrics(pe_pct=50, discount=0, days=20), self.t)
+        types = [s.type for s in sigs]
+        self.assertNotIn("hold", types)
+
+    def test_reduce_pe_and_switch_can_coexist(self):
         """PE>85 且 天数<7 → reduce + switch 同时触发"""
         sigs = evaluate(HOLDING, make_metrics(pe_pct=90, discount=8, days=3), self.t)
         types = [s.type for s in sigs]
@@ -149,10 +195,16 @@ class TestPriority(unittest.TestCase):
         top = min(sigs, key=lambda s: s.priority)
         self.assertEqual(top.type, "reduce")
 
+    def test_reduce_basis_highest(self):
+        """贴水变升水也是 priority=1"""
+        sigs = evaluate(HOLDING, make_metrics(pe_pct=50, discount=-1, days=20), self.t)
+        top = min(sigs, key=lambda s: s.priority)
+        self.assertEqual(top.type, "reduce")
+        self.assertEqual(top.priority, 1)
+
     def test_priority_order(self):
         """priority: reduce(1) > entry(2) > switch(3) > warn(4) > wait/hold(5)"""
         sigs = evaluate(HOLDING, make_metrics(pe_pct=90, discount=8, days=3), self.t)
-        # 至少 reduce(priority=1) 和 switch(priority=3)
         priorities = [s.priority for s in sigs]
         self.assertIn(1, priorities)  # reduce
         self.assertIn(3, priorities)  # switch
