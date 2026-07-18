@@ -108,33 +108,68 @@ def _migrate_signals_unique(conn: sqlite3.Connection) -> None:
     )
 
 
-def upsert_valuation(conn: sqlite3.Connection, row: dict[str, Any]) -> bool:
-    """插入估值行；PK 冲突则忽略。返回 True=新增, False=已存在。"""
+def upsert_valuation(conn: sqlite3.Connection, row: dict[str, Any]) -> str:
+    """UPSERT：PK(date) 冲突则更新所有数值字段。返回 'inserted' 或 'updated'。
+
+    数据源偶尔会修正历史数据（PE/PB 重算、合约盘后修正），INSERT OR IGNORE
+    会丢失修正——这里用 ON CONFLICT UPDATE 保证最新值覆盖。
+    """
+    existed = conn.execute(
+        "SELECT 1 FROM daily_valuation WHERE date = ?", (row["date"],)
+    ).fetchone() is not None
     sql = """
-    INSERT OR IGNORE INTO daily_valuation
+    INSERT INTO daily_valuation
         (date, close, pe_static, pe_ttm, pe_ttm_eq, pe_static_med,
          pe_ttm_med, pb, pb_med, pb_w, fetched_at)
     VALUES (:date, :close, :pe_static, :pe_ttm, :pe_ttm_eq, :pe_static_med,
             :pe_ttm_med, :pb, :pb_med, :pb_w, :fetched_at)
+    ON CONFLICT(date) DO UPDATE SET
+        close=excluded.close,
+        pe_static=excluded.pe_static,
+        pe_ttm=excluded.pe_ttm,
+        pe_ttm_eq=excluded.pe_ttm_eq,
+        pe_static_med=excluded.pe_static_med,
+        pe_ttm_med=excluded.pe_ttm_med,
+        pb=excluded.pb,
+        pb_med=excluded.pb_med,
+        pb_w=excluded.pb_w,
+        fetched_at=excluded.fetched_at
     """
-    cur = conn.execute(sql, row)
+    conn.execute(sql, row)
     conn.commit()
-    return cur.rowcount > 0
+    return "updated" if existed else "inserted"
 
 
-def upsert_contract(conn: sqlite3.Connection, row: dict[str, Any]) -> bool:
+def upsert_contract(conn: sqlite3.Connection, row: dict[str, Any]) -> str:
+    """UPSERT：PK(date, symbol) 冲突则更新所有数值字段。返回 'inserted' 或 'updated'。"""
+    existed = conn.execute(
+        "SELECT 1 FROM daily_contracts WHERE date = ? AND symbol = ?",
+        (row["date"], row["symbol"]),
+    ).fetchone() is not None
     sql = """
-    INSERT OR IGNORE INTO daily_contracts
+    INSERT INTO daily_contracts
         (date, symbol, name, contract_type, close, settle, volume,
          open_interest, expire_date, days_to_expire, basis,
          annualized_discount, fetched_at)
     VALUES (:date, :symbol, :name, :contract_type, :close, :settle, :volume,
             :open_interest, :expire_date, :days_to_expire, :basis,
             :annualized_discount, :fetched_at)
+    ON CONFLICT(date, symbol) DO UPDATE SET
+        name=excluded.name,
+        contract_type=excluded.contract_type,
+        close=excluded.close,
+        settle=excluded.settle,
+        volume=excluded.volume,
+        open_interest=excluded.open_interest,
+        expire_date=excluded.expire_date,
+        days_to_expire=excluded.days_to_expire,
+        basis=excluded.basis,
+        annualized_discount=excluded.annualized_discount,
+        fetched_at=excluded.fetched_at
     """
-    cur = conn.execute(sql, row)
+    conn.execute(sql, row)
     conn.commit()
-    return cur.rowcount > 0
+    return "updated" if existed else "inserted"
 
 
 def insert_signal(conn: sqlite3.Connection, signal: dict[str, Any]) -> int:

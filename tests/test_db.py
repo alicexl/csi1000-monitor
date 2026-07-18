@@ -90,16 +90,16 @@ class TestValuationCRUD(unittest.TestCase):
             "pb": 2.58, "pb_med": 2.65, "pb_w": 4.77,
             "fetched_at": "2026-07-12T10:00:00",
         }
-        changed = upsert_valuation(self.conn, row)
-        self.assertTrue(changed)
+        result = upsert_valuation(self.conn, row)
+        self.assertEqual(result, "inserted")
 
         latest = query_latest_valuation(self.conn)
         self.assertIsNotNone(latest)
         self.assertEqual(latest["date"], "2026-07-10")
         self.assertAlmostEqual(latest["close"], 8198.31, places=2)
 
-    def test_upsert_duplicate_returns_false(self):
-        """重复插入同一天返回 False（PK 去重）"""
+    def test_upsert_updates_existing_row(self):
+        """重复插入同一天 → updated，且数值被新值覆盖"""
         row = {
             "date": "2026-07-10", "close": 8198.31,
             "pe_static": 35.77, "pe_ttm": 34.57, "pe_ttm_eq": 61.05,
@@ -108,8 +108,23 @@ class TestValuationCRUD(unittest.TestCase):
             "fetched_at": "2026-07-12T10:00:00",
         }
         upsert_valuation(self.conn, row)
-        changed = upsert_valuation(self.conn, row)
-        self.assertFalse(changed)
+        # 数据源修正了 close
+        row2 = dict(row)
+        row2["close"] = 8250.0
+        row2["pe_ttm"] = 34.80
+        row2["fetched_at"] = "2026-07-12T20:00:00"
+        result = upsert_valuation(self.conn, row2)
+        self.assertEqual(result, "updated")
+        # 验证新值已覆盖
+        latest = query_latest_valuation(self.conn)
+        self.assertAlmostEqual(latest["close"], 8250.0, places=2)
+        self.assertAlmostEqual(latest["pe_ttm"], 34.80, places=2)
+        self.assertEqual(latest["fetched_at"], "2026-07-12T20:00:00")
+        # 行数仍是 1（不是新增）
+        cnt = self.conn.execute(
+            "SELECT COUNT(*) FROM daily_valuation WHERE date = '2026-07-10'"
+        ).fetchone()[0]
+        self.assertEqual(cnt, 1)
 
     def test_query_history(self):
         for d, close in [("2026-07-08", 8117.86), ("2026-07-09", 8300.08), ("2026-07-10", 8198.31)]:
@@ -138,8 +153,9 @@ class TestContractCRUD(unittest.TestCase):
     def test_upsert_and_query_by_date(self):
         """query_contracts_by_date 排除 IM0（主力连续）"""
         # 插入 2 个普通合约 + 1 个主力连续
+        results = {}
         for sym, ctype in [("IM2607", "当月"), ("IM2608", "下月"), ("IM0", "主力")]:
-            upsert_contract(self.conn, {
+            results[sym] = upsert_contract(self.conn, {
                 "date": "2026-07-10", "symbol": sym, "name": f"中证1000 {sym[-2:]}",
                 "contract_type": ctype, "close": 8150.0, "settle": 8145.0,
                 "volume": 100000, "open_interest": 50000,
@@ -147,11 +163,36 @@ class TestContractCRUD(unittest.TestCase):
                 "basis": -48.31, "annualized_discount": 13.5,
                 "fetched_at": "2026-07-12T10:00:00",
             })
+        # 首次都是 inserted
+        self.assertEqual(set(results.values()), {"inserted"})
         rows = query_contracts_by_date(self.conn, "2026-07-10")
         # 只返回 2 个（排除 IM0）
         self.assertEqual(len(rows), 2)
         symbols = [r["symbol"] for r in rows]
         self.assertNotIn("IM0", symbols)
+
+    def test_upsert_contract_updates_values(self):
+        """同一 (date, symbol) 重复插入 → updated，数值被覆盖"""
+        row = {
+            "date": "2026-07-10", "symbol": "IM2607", "name": "中证1000 07",
+            "contract_type": "当月", "close": 8150.0, "settle": 8145.0,
+            "volume": 100000, "open_interest": 50000,
+            "expire_date": "2026-07-17", "days_to_expire": 7,
+            "basis": -48.31, "annualized_discount": 13.5,
+            "fetched_at": "2026-07-12T10:00:00",
+        }
+        self.assertEqual(upsert_contract(self.conn, dict(row)), "inserted")
+        # 盘后数据修正
+        row2 = dict(row)
+        row2["close"] = 8180.0
+        row2["basis"] = -18.31
+        row2["fetched_at"] = "2026-07-12T20:00:00"
+        self.assertEqual(upsert_contract(self.conn, row2), "updated")
+        rows = query_contracts_by_date(self.conn, "2026-07-10")
+        self.assertEqual(len(rows), 1)
+        self.assertAlmostEqual(rows[0]["close"], 8180.0)
+        self.assertAlmostEqual(rows[0]["basis"], -18.31)
+        self.assertEqual(rows[0]["fetched_at"], "2026-07-12T20:00:00")
 
     def test_main_continuous_history(self):
         """主力连续合约 symbol='IM0' 单独查询"""

@@ -165,11 +165,13 @@ def _scan() -> int:
     # 1. 拉估值
     print("[1/3] 拉取 PE/PB 历史...", flush=True)
     val_rows = fetch_valuation()
-    new_val = 0
+    val_ins = val_upd = 0
     for r in val_rows:
-        if upsert_valuation(conn, r):
-            new_val += 1
-    print(f"      OK {len(val_rows)} 行，新增 {new_val}", flush=True)
+        if upsert_valuation(conn, r) == "inserted":
+            val_ins += 1
+        else:
+            val_upd += 1
+    print(f"      OK {len(val_rows)} 行（新增 {val_ins}，更新 {val_upd}）", flush=True)
 
     # 2. 拉主力连续（需要最新现货收盘算基差）
     latest = query_latest_valuation(conn)
@@ -184,19 +186,23 @@ def _scan() -> int:
 
     print("[2/3] 拉取主力连续 IM0...", flush=True)
     main_rows = fetch_main_continuous(spot_close, today)
-    new_main = 0
+    main_ins = main_upd = 0
     for r in main_rows:
-        if upsert_contract(conn, r):
-            new_main += 1
-    print(f"      OK {len(main_rows)} 行，新增 {new_main}", flush=True)
+        if upsert_contract(conn, r) == "inserted":
+            main_ins += 1
+        else:
+            main_upd += 1
+    print(f"      OK {len(main_rows)} 行（新增 {main_ins}，更新 {main_upd}）", flush=True)
 
     # 3. 入库当日 IM 合约（复用 _resolve_trade_date 的结果）
     print(f"[3/3] 入库 IM 合约（{today}）...", flush=True)
-    new_ct = 0
+    ct_ins = ct_upd = 0
     for r in cached_contracts:
-        if upsert_contract(conn, r):
-            new_ct += 1
-    print(f"      OK {len(cached_contracts)} 合约，新增 {new_ct}", flush=True)
+        if upsert_contract(conn, r) == "inserted":
+            ct_ins += 1
+        else:
+            ct_upd += 1
+    print(f"      OK {len(cached_contracts)} 合约（新增 {ct_ins}，更新 {ct_upd}）", flush=True)
 
     conn.close()
     return 0
