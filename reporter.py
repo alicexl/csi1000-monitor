@@ -87,16 +87,13 @@ def _contracts_table(metrics: dict) -> str:
 
 
 def _expected_return_panel(er: dict) -> str:
-    """三因子预期收益 panel（PDF 杨康平框架：贴水 + ROE + 分红 + 估值变动）。
+    """三因子预期收益 panel（PDF 杨康平框架：ROE + 分红 + 估值变动）。
 
-    展示：
-    - 三项分量（ROE 反推、分红率、下月贴水年化）
-    - 估值回归预期（PE 回到 10 年中位数的变动）
-    - 估值不变时的年化预期 + 3年/5年复利
+    展期收益（roll_yield = 期限结构斜率）单独看 status_line 和期货合约表的基差，
+    不作为多年复利收益的预测分量（曲线斜率会变化，难以长期预测）。
     """
     roe = er["roe_pct"]
     div = er["dividend_yield_pct"]
-    roll = er["roll_yield_pct"]
     val = er["valuation_change_pct"]
     base = er["annual_no_valuation_pct"]
     pe_med = er.get("pe_median_10y")
@@ -109,7 +106,6 @@ def _expected_return_panel(er: dict) -> str:
         "|---|---|---|",
         f"| ROE（PB/PE 反推） | {roe:+.1f}% | 估值不变时的长期涨幅代理 |",
         f"| 分红率 | +{div:.1f}% | 经验默认值（中证1000 约 1-2%）|",
-        f"| 展期收益（下月年化贴水） | {roll:+.1f}% | 吃贴水策略核心收益 |",
         f"| 估值回归（PE→10y 中位 {pe_med_str}） | {val_sign}{val:.1f}% | 1 年假设回归 |",
         "",
         f"**估值不变年化预期**：`{base:+.1f}%` "
@@ -118,6 +114,8 @@ def _expected_return_panel(er: dict) -> str:
         "",
         f"**含估值回归 1 年预期**：`{er['annual_with_mean_reversion_pct']:+.1f}%` "
         f"（假设 PE 1 年内回到 10 年中位数）",
+        "",
+        "> 展期收益（roll_yield）见状态行和期货合约表的基差；曲线斜率会变化，不计入多年复利预测。",
     ]
     return "\n".join(lines)
 
@@ -178,7 +176,7 @@ def generate_report(
 
     er = metrics.get("expected_return")
     if er:
-        lines.append("## 预期收益（三因子模型：贴水 + ROE + 分红 + 估值变动）")
+        lines.append("## 预期收益（三因子：ROE + 分红 + 估值变动）")
         lines.append(_expected_return_panel(er))
         lines.append("")
 
@@ -220,10 +218,10 @@ def generate_report(
 
 def render_status_line(
     report_date: str, position: Position, metrics: dict,
-    signal_type: str, next_month_discount: float,
+    signal_type: str, roll_yield: float,
 ) -> str:
-    """status 子命令一行输出。next_month_discount 由调用方通过 _extract_signal_metrics 算好，
-    策略判断基于下月贴水（展期收益来源）。emoji 直接从 signal_type 映射，
+    """status 子命令一行输出。roll_yield 由调用方通过 _extract_signal_metrics 算好
+    （= 下月年化贴水 - 当月年化贴水 = 期限结构斜率）。emoji 直接从 signal_type 映射，
     避免在这里重复判断阈值（升水/switch 状态也能正确反映）。
     """
     state = position.status
@@ -235,4 +233,4 @@ def render_status_line(
 
     return (f"{report_date} | {state_cn} | {close:.0f}点 | "
             f"PE_TTM {pe:.1f} ({pe_pct:.1f}%{emoji}) | "
-            f"下月贴水 {next_month_discount:+.1f}% | 信号: {signal_type}")
+            f"展期收益 {roll_yield:+.1f}% | 信号: {signal_type}")

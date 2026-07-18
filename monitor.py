@@ -118,36 +118,37 @@ def _window_median(history: list[dict], field: str, days: int) -> float | None:
 
 def _compute_expected_return(
     close: float, pe_ttm: float, pb: float,
-    next_month_discount: float, pe_median_10y: float | None,
+    pe_median_10y: float | None,
     dividend_yield: float = DEFAULT_DIVIDEND_YIELD,
 ) -> dict:
     """三因子预期收益模型（杨康平 PDF 框架）：
 
-        预期年化 = 贴水收益(roll yield) + ROE + 分红 + 估值变动
+        预期年化 = ROE + 分红 + 估值变动
 
     - ROE = PB / PE = (P/B) / (P/E) = E/B（不需要额外数据源，用现有 PE/PB 反推）
     - 分红率：默认 1.0%（PDF 经验值，中证1000 历史约 1-2%）
-    - 展期收益：下月年化贴水（吃贴水策略的核心收益）
     - 估值回归：如果 PE 回到 10 年中位数，估值变动 = (pe_median - pe_now) / pe_now
       （正值 = 低估有修复空间；负值 = 高估有回落风险）
+
+    **展期收益不计入此 panel**：吃贴水策略的核心收益来自曲线斜率（roll_yield =
+    下月年化贴水 - 当月年化贴水），但该值随期限结构变化、难以多年预测。用户可参考
+    期货合约表的基差/年化贴水直观判断当前曲线健康度。status_line 一行单独展示 roll_yield。
 
     返回 dict：各分量 + 估值不变年化 + 3年/5年复利 + 估值回归 1 年预期。
     """
     if pe_ttm <= 0 or pb <= 0:
         return {
             "roe_pct": 0.0, "dividend_yield_pct": dividend_yield,
-            "roll_yield_pct": next_month_discount,
             "pe_median_10y": pe_median_10y,
             "valuation_change_pct": 0.0,
-            "annual_no_valuation_pct": next_month_discount + dividend_yield,
+            "annual_no_valuation_pct": dividend_yield,
             "c3y_no_valuation_pct": 0.0, "c5y_no_valuation_pct": 0.0,
-            "annual_with_mean_reversion_pct": next_month_discount + dividend_yield,
+            "annual_with_mean_reversion_pct": dividend_yield,
         }
 
     roe = pb / pe_ttm * 100  # E/B = (P/B)/(P/E) 百分比形式
-    roll = next_month_discount
     div = dividend_yield
-    base = roe + div + roll  # 估值不变时的年化（%）
+    base = roe + div  # 估值不变时的年化（%）
 
     if pe_median_10y and pe_median_10y > 0:
         val_change = (pe_median_10y - pe_ttm) / pe_ttm * 100
@@ -160,7 +161,6 @@ def _compute_expected_return(
     return {
         "roe_pct": roe,
         "dividend_yield_pct": div,
-        "roll_yield_pct": roll,
         "pe_median_10y": pe_median_10y,
         "valuation_change_pct": val_change,
         "annual_no_valuation_pct": base,
@@ -212,8 +212,9 @@ def _resolve_trade_date(spot_close: float,
 def _extract_signal_metrics(metrics: dict) -> dict:
     """从 metrics 抽出 signals.evaluate 需要的指标 dict。
 
-    策略判断基于**下月年化贴水**（展期吃贴水策略的核心——远月有贴水才有展期收益）。
-    当月贴水仅作为 warn 信号参考（近月异常升水但远月仍贴水时提醒）。
+    策略判断基于**展期收益 roll_yield = 下月年化贴水 - 当月年化贴水**（期限结构斜率）：
+    roll_yield > 0 表示远月比近月更深贴水（曲线向下倾斜），展期（卖近月买远月）能吃到价差。
+    当月/下月绝对贴水保留作展示参考（status_line/报告）。
     days 用于 switch 信号（当月临交割时切月）。
     """
     contracts = metrics.get("contracts", [])
@@ -221,12 +222,15 @@ def _extract_signal_metrics(metrics: dict) -> dict:
         (c for c in contracts if c["contract_type"] == "当月"), None)
     next_month = next(
         (c for c in contracts if c["contract_type"] == "下月"), None)
+    d_near = cur_month["annualized_discount"] if cur_month else 0
+    d_far = next_month["annualized_discount"] if next_month else 0
     return {
         "pe_ttm_pct_10y": metrics["pe_ttm_pct"].get("10y", {}).get("pct")
                           or 100,  # 样本不足（None）→ 100，保守 wait 不入场
-        "current_month_discount": cur_month["annualized_discount"] if cur_month else 0,
+        "current_month_discount": d_near,
         "current_month_days": cur_month["days_to_expire"] if cur_month else 999,
-        "next_month_discount": next_month["annualized_discount"] if next_month else 0,
+        "next_month_discount": d_far,
+        "roll_yield": d_far - d_near,
     }
 
 
@@ -338,12 +342,9 @@ def _build_metrics(conn) -> dict:
         "main_continuous_discount_pct": main_pct,
     }
 
-    # 预期收益三因子（PDF 框架：贴水 + ROE + 分红 + 估值变动）
-    next_month = next(
-        (c for c in contracts if c["contract_type"] == "下月"), None)
-    next_disc = next_month["annualized_discount"] if next_month else 0
+    # 预期收益三因子（PDF 框架：ROE + 分红 + 估值变动；展期收益单独看 roll_yield）
     metrics["expected_return"] = _compute_expected_return(
-        close, pe_ttm, pb, next_disc, pe_median_10y)
+        close, pe_ttm, pb, pe_median_10y)
 
     # 期权增厚分析（实时拉取，失败不阻断）
     try:
@@ -403,7 +404,7 @@ def cmd_status() -> int:
     sig_type = top.type if top else "none"
 
     print(render_status_line(metrics["date"], position, metrics, sig_type,
-                             sig_metrics["next_month_discount"]))
+                             sig_metrics["roll_yield"]))
     conn.close()
     return 0
 

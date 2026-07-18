@@ -110,11 +110,14 @@ class TestE2EReport(unittest.TestCase):
         metrics = self._build_metrics()
         cur_month = next(c for c in metrics["contracts"] if c["contract_type"] == "当月")
         next_month = next(c for c in metrics["contracts"] if c["contract_type"] == "下月")
+        d_near = cur_month["annualized_discount"]
+        d_far = next_month["annualized_discount"]
         sigs = evaluate("empty", {
             "pe_ttm_pct_10y": metrics["pe_ttm_pct"]["10y"].get("pct") or 100,
-            "current_month_discount": cur_month["annualized_discount"],
+            "current_month_discount": d_near,
             "current_month_days": cur_month["days_to_expire"],
-            "next_month_discount": next_month["annualized_discount"],
+            "next_month_discount": d_far,
+            "roll_yield": d_far - d_near,
         }, t)
         report = generate_report("2026-07-10", pos, metrics, sigs)
         # 关键内容存在
@@ -133,18 +136,21 @@ class TestE2EReport(unittest.TestCase):
         metrics = self._build_metrics()
         cur_month = next(c for c in metrics["contracts"] if c["contract_type"] == "当月")
         next_month = next(c for c in metrics["contracts"] if c["contract_type"] == "下月")
+        d_near = cur_month["annualized_discount"]
+        d_far = next_month["annualized_discount"]
         sigs = evaluate("holding", {
             "pe_ttm_pct_10y": metrics["pe_ttm_pct"]["10y"].get("pct") or 100,
-            "current_month_discount": cur_month["annualized_discount"],
+            "current_month_discount": d_near,
             "current_month_days": cur_month["days_to_expire"],
-            "next_month_discount": next_month["annualized_discount"],
+            "next_month_discount": d_far,
+            "roll_yield": d_far - d_near,
         }, t)
         top = min(sigs, key=lambda s: s.priority)
         line = render_status_line("2026-07-10", pos, metrics, top.type,
-                                 next_month["annualized_discount"])
+                                 d_far - d_near)
         self.assertIn("持仓", line)
         self.assertIn("2026-07-10", line)
-        self.assertIn("下月贴水", line)
+        self.assertIn("展期收益", line)
 
 
 if __name__ == "__main__":

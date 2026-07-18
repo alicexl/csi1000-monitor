@@ -23,8 +23,8 @@ def _contract(ctype, disc, days):
 
 
 class TestExtractSignalMetrics(unittest.TestCase):
-    """_extract_signal_metrics 同时返回当月贴水（warn 用）和下月贴水（策略判断主指标）。
-    不再有 days<switch_days 的 fallback——下月贴水直接对应下月合约。"""
+    """_extract_signal_metrics 返回当月贴水、下月贴水、roll_yield（= 下月 - 当月）。
+    策略判断基于 roll_yield（曲线斜率），贴水作展示参考。"""
 
     def setUp(self):
         self.metrics = {
@@ -36,8 +36,8 @@ class TestExtractSignalMetrics(unittest.TestCase):
             "contracts": [],
         }
 
-    def test_returns_both_near_and_far_discount(self):
-        """当月 + 下月都有 → 同时返回两个字段"""
+    def test_returns_roll_yield_and_discounts(self):
+        """当月 + 下月都有 → 返回 d_near / d_far / roll_yield / days"""
         self.metrics["contracts"] = [
             _contract("当月", 5.0, 20),
             _contract("下月", 7.0, 50),
@@ -46,32 +46,32 @@ class TestExtractSignalMetrics(unittest.TestCase):
         self.assertAlmostEqual(out["current_month_discount"], 5.0)
         self.assertAlmostEqual(out["next_month_discount"], 7.0)
         self.assertEqual(out["current_month_days"], 20)
+        # roll_yield = 下月 - 当月（曲线斜率）
+        self.assertAlmostEqual(out["roll_yield"], 2.0)
 
-    def test_far_discount_independent_of_near_days(self):
-        """下月贴水独立于当月 days：当月临交割时不再 fallback"""
+    def test_roll_yield_negative_when_curve_inverted(self):
+        """曲线倒挂（near > far）→ roll_yield < 0"""
         self.metrics["contracts"] = [
-            _contract("当月", 0.0, 3),   # 临近交割
-            _contract("下月", 7.2, 35),
+            _contract("当月", 7.2, 35),
+            _contract("下月", 0.0, 3),   # 实际不会发生，仅测算法
         ]
         out = _extract_signal_metrics(self.metrics)
-        # 当月贴水仍按当月数据返回（warn 用）
-        self.assertAlmostEqual(out["current_month_discount"], 0.0)
-        self.assertEqual(out["current_month_days"], 3)
-        # 下月贴水独立返回（策略判断用）
-        self.assertAlmostEqual(out["next_month_discount"], 7.2)
+        self.assertAlmostEqual(out["roll_yield"], 0.0 - 7.2)
 
-    def test_no_next_month_returns_zero_far(self):
-        """无下月合约 → next_month_discount = 0（保守）"""
+    def test_no_next_month_roll_yield_negative(self):
+        """无下月合约 → next_month_discount = 0，roll_yield = -near"""
         self.metrics["contracts"] = [_contract("当月", 5.0, 20)]
         out = _extract_signal_metrics(self.metrics)
         self.assertAlmostEqual(out["current_month_discount"], 5.0)
         self.assertAlmostEqual(out["next_month_discount"], 0)
+        self.assertAlmostEqual(out["roll_yield"], -5.0)
 
     def test_no_contracts_returns_zeros(self):
         """无合约数据 → 全 0/999（触发 wait 兜底）"""
         out = _extract_signal_metrics(self.metrics)
         self.assertAlmostEqual(out["current_month_discount"], 0)
         self.assertAlmostEqual(out["next_month_discount"], 0)
+        self.assertAlmostEqual(out["roll_yield"], 0)
         self.assertEqual(out["current_month_days"], 999)
 
 
@@ -174,24 +174,21 @@ class TestPositionPersistence(unittest.TestCase):
 
 
 class TestComputeExpectedReturn(unittest.TestCase):
-    """三因子预期收益模型：ROE=PB/PE、分红默认 1%、展期=下月贴水、估值回归到 PE 10y 中位数。"""
+    """三因子预期收益模型：ROE=PB/PE、分红默认 1%、估值回归到 PE 10y 中位数。
+    展期收益（roll_yield）由 status_line/期货合约表单独展示，不计入此 panel。"""
 
     def test_roe_derived_from_pb_pe(self):
         """PB/PE = E/B = ROE。PB=2.5, PE=35 → ROE ≈ 7.14%"""
         er = _compute_expected_return(
-            close=8198, pe_ttm=35.0, pb=2.5,
-            next_month_discount=8.0, pe_median_10y=None)
+            close=8198, pe_ttm=35.0, pb=2.5, pe_median_10y=None)
         self.assertAlmostEqual(er["roe_pct"], 2.5 / 35.0 * 100, places=3)
         self.assertAlmostEqual(er["dividend_yield_pct"], 1.0)
-        self.assertAlmostEqual(er["roll_yield_pct"], 8.0)
 
     def test_compounding_3y_5y(self):
-        """估值不变年化 = ROE + 分红 + 贴水；3年/5年复利按 (1+r)^n-1 算"""
+        """估值不变年化 = ROE + 分红；3年/5年复利按 (1+r)^n-1 算"""
         er = _compute_expected_return(
-            close=8198, pe_ttm=35.0, pb=2.5,
-            next_month_discount=8.0, pe_median_10y=None)
-        # base = 7.143 + 1.0 + 8.0 = 16.143
-        expected_base = 2.5 / 35.0 * 100 + 1.0 + 8.0
+            close=8198, pe_ttm=35.0, pb=2.5, pe_median_10y=None)
+        expected_base = 2.5 / 35.0 * 100 + 1.0
         self.assertAlmostEqual(er["annual_no_valuation_pct"], expected_base, places=2)
         expected_c3 = ((1 + expected_base / 100) ** 3 - 1) * 100
         expected_c5 = ((1 + expected_base / 100) ** 5 - 1) * 100
@@ -201,22 +198,17 @@ class TestComputeExpectedReturn(unittest.TestCase):
     def test_valuation_reversion_positive_when_undervalued(self):
         """PE 低于 10 年中位数 → 估值回归正值（有修复空间）"""
         er = _compute_expected_return(
-            close=8198, pe_ttm=30.0, pb=2.4,
-            next_month_discount=10.0, pe_median_10y=40.0)
-        # (40-30)/30 = +33.3%
+            close=8198, pe_ttm=30.0, pb=2.4, pe_median_10y=40.0)
         self.assertAlmostEqual(er["valuation_change_pct"], (40 - 30) / 30 * 100,
                                places=2)
         self.assertGreater(er["valuation_change_pct"], 0)
-        # 含估值回归 1 年预期 > 估值不变年化
         self.assertGreater(er["annual_with_mean_reversion_pct"],
                            er["annual_no_valuation_pct"])
 
     def test_valuation_reversion_negative_when_overvalued(self):
         """PE 高于 10 年中位数 → 估值回归负值（有回落风险）"""
         er = _compute_expected_return(
-            close=8198, pe_ttm=45.0, pb=2.8,
-            next_month_discount=5.0, pe_median_10y=35.0)
-        # (35-45)/45 = -22.2%
+            close=8198, pe_ttm=45.0, pb=2.8, pe_median_10y=35.0)
         self.assertLess(er["valuation_change_pct"], 0)
         self.assertLess(er["annual_with_mean_reversion_pct"],
                         er["annual_no_valuation_pct"])
@@ -224,21 +216,10 @@ class TestComputeExpectedReturn(unittest.TestCase):
     def test_no_pe_median_zero_reversion(self):
         """无中位数（样本不足）→ 估值回归 0，含回归 == 估值不变"""
         er = _compute_expected_return(
-            close=8198, pe_ttm=35.0, pb=2.5,
-            next_month_discount=8.0, pe_median_10y=None)
+            close=8198, pe_ttm=35.0, pb=2.5, pe_median_10y=None)
         self.assertEqual(er["valuation_change_pct"], 0.0)
         self.assertEqual(er["annual_with_mean_reversion_pct"],
                          er["annual_no_valuation_pct"])
-
-    def test_negative_discount_reduces_return(self):
-        """远月升水（贴水为负）→ 展期收益为负，拉低整体预期"""
-        er = _compute_expected_return(
-            close=8198, pe_ttm=35.0, pb=2.5,
-            next_month_discount=-2.0, pe_median_10y=None)
-        self.assertLess(er["roll_yield_pct"], 0)
-        # base = ROE + 分红 - 2
-        self.assertLess(er["annual_no_valuation_pct"],
-                        2.5 / 35.0 * 100 + 1.0)
 
 
 class TestWindowMedian(unittest.TestCase):

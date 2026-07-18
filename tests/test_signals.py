@@ -9,13 +9,16 @@ HOLDING = "holding"
 
 
 def make_metrics(pe_pct=50, discount=5, days=10, near_discount=None):
-    """构造 signals 输入。discount = 下月年化贴水（策略判断主指标）；
-    near_discount = 当月年化贴水（默认等于 discount，warn 场景才需要显式区分）。"""
+    """构造 signals 输入。discount = 下月年化贴水；near_discount = 当月年化贴水。
+    roll_yield = discount - near_discount（自动计算）。
+    默认 near_discount = 3（比下月小，即正常 backwardation，roll_yield = discount - 3 > 0）。"""
+    near = near_discount if near_discount is not None else 3
     return {
         "pe_ttm_pct_10y": pe_pct,
-        "current_month_discount": near_discount if near_discount is not None else discount,
+        "current_month_discount": near,
         "current_month_days": days,
         "next_month_discount": discount,
+        "roll_yield": discount - near,
     }
 
 
@@ -71,14 +74,14 @@ class TestEmptyState(unittest.TestCase):
         sigs = evaluate(EMPTY, make_metrics(pe_pct=70, discount=8), self.t)
         wait = next(s for s in sigs if s.type == "wait")
         self.assertIn("观望区", wait.condition)
-        self.assertIn("可吃", wait.condition)
+        self.assertIn("曲线健康", wait.condition)
 
     def test_wait_zone_high(self):
         """75-85% 偏高区文案"""
-        sigs = evaluate(EMPTY, make_metrics(pe_pct=80, discount=3), self.t)
+        sigs = evaluate(EMPTY, make_metrics(pe_pct=80, discount=8), self.t)
         wait = next(s for s in sigs if s.type == "wait")
         self.assertIn("偏高", wait.condition)
-        self.assertIn("可吃", wait.condition)
+        self.assertIn("曲线健康", wait.condition)
 
     def test_wait_zone_excessive(self):
         """>=85% 过高区文案（空仓状态下不触发 reduce，但文案要体现）"""
@@ -86,34 +89,41 @@ class TestEmptyState(unittest.TestCase):
         wait = next(s for s in sigs if s.type == "wait")
         self.assertIn("过高", wait.condition)
 
-    def test_wait_discount_tag(self):
-        """wait 信号附带贴水状态：可吃 vs 升水"""
+    def test_wait_roll_yield_tag(self):
+        """wait 信号附带展期收益状态：曲线健康 vs 曲线异常"""
         sigs_hi = evaluate(EMPTY, make_metrics(pe_pct=70, discount=8), self.t)
-        self.assertIn("可吃", next(s for s in sigs_hi if s.type == "wait").condition)
-        sigs_lo = evaluate(EMPTY, make_metrics(pe_pct=70, discount=-1), self.t)
-        self.assertIn("升水", next(s for s in sigs_lo if s.type == "wait").condition)
+        self.assertIn("曲线健康",
+                      next(s for s in sigs_hi if s.type == "wait").condition)
+        # near > far（倒挂）→ roll_yield < 0 → 曲线异常
+        sigs_lo = evaluate(EMPTY, make_metrics(
+            pe_pct=70, discount=2, near_discount=5), self.t)
+        self.assertIn("曲线异常",
+                      next(s for s in sigs_lo if s.type == "wait").condition)
 
     def test_warn_entry_pe_in_zone_with_discount(self):
-        """warn_entry 接近入场分支带贴水状态（贴水>0）"""
+        """warn_entry 接近入场分支 + roll_yield > 0"""
         sigs = evaluate(EMPTY, make_metrics(pe_pct=55, discount=8), self.t)
         we = next(s for s in sigs if s.type == "warn_entry")
-        self.assertIn("已达标", we.condition)
+        self.assertIn("曲线健康", we.condition)
 
-    def test_warn_entry_pe_in_zone_premium(self):
-        """warn_entry 接近入场分支带贴水状态（升水）"""
-        sigs = evaluate(EMPTY, make_metrics(pe_pct=55, discount=-1), self.t)
-        we = next(s for s in sigs if s.type == "warn_entry")
-        self.assertIn("升水", we.condition)
-
-    def test_warn_entry_near_premium_far_discount(self):
-        """PE够低 + 远月贴水但近月升水 → warn_entry（提醒：可等当月修复或直接买下月）"""
+    def test_warn_entry_pe_in_zone_curve_flat(self):
+        """warn_entry 接近入场分支 + 曲线扁平/倒挂"""
         sigs = evaluate(EMPTY, make_metrics(
-            pe_pct=40, discount=5, near_discount=-1), self.t)
-        types = [s.type for s in sigs]
-        self.assertIn("warn_entry", types)
-        self.assertNotIn("entry", types)
+            pe_pct=55, discount=3, near_discount=5), self.t)
         we = next(s for s in sigs if s.type == "warn_entry")
-        self.assertIn("近月异常", we.condition)
+        self.assertIn("曲线扁平", we.condition)
+
+    def test_entry_when_curve_healthy_even_if_near_premium(self):
+        """PE够低 + roll_yield > 0（即使近月升水，只要远月更深贴水）→ entry。
+
+        旧逻辑（d_far > 0 AND d_near > 0）会要求近月也有贴水；
+        新逻辑只看曲线斜率——近月异常升水但远月更深贴水时仍可入场（首次展期前能吃到）。
+        """
+        sigs = evaluate(EMPTY, make_metrics(
+            pe_pct=40, discount=8, near_discount=-1), self.t)
+        types = [s.type for s in sigs]
+        self.assertIn("entry", types)
+        self.assertNotIn("warn_entry", types)
 
 
 class TestHoldingState(unittest.TestCase):
@@ -144,21 +154,22 @@ class TestHoldingState(unittest.TestCase):
         types = [s.type for s in sigs]
         self.assertIn("reduce", types)
 
-    def test_reduce_basis_not_trigger_when_positive(self):
-        """贴水>0（有贴水）→ 不触发 reduce"""
-        sigs = evaluate(HOLDING, make_metrics(pe_pct=50, discount=3), self.t)
-        types = [s.type for s in sigs]
-        self.assertNotIn("reduce", types)
+    def test_reduce_basis_not_trigger_when_curve_healthy(self):
+        """roll_yield > 0（曲线向下倾斜）→ 不触发 reduce_basis"""
+        sigs = evaluate(HOLDING, make_metrics(pe_pct=50, discount=8), self.t)
+        reduce_sigs = [s for s in sigs if s.type == "reduce"]
+        self.assertEqual(len(reduce_sigs), 0)
 
     def test_reduce_pe_and_basis_coexist(self):
-        """PE>85 且 贴水<=0 → 两个 reduce 都触发"""
-        sigs = evaluate(HOLDING, make_metrics(pe_pct=90, discount=-1), self.t)
+        """PE>85 且 roll_yield<=0 → 两个 reduce 都触发"""
+        sigs = evaluate(HOLDING, make_metrics(
+            pe_pct=90, discount=3, near_discount=5), self.t)
         reduce_sigs = [s for s in sigs if s.type == "reduce"]
         self.assertEqual(len(reduce_sigs), 2)
-        # 一个 condition 含 PE，一个含贴水
+        # 一个 condition 含 PE，一个含展期收益
         conds = " | ".join(s.condition for s in reduce_sigs)
         self.assertIn("PE_TTM", conds)
-        self.assertIn("贴水", conds)
+        self.assertIn("展期收益", conds)
 
     def test_warn_reduce(self):
         """PE 在 75-85% → warn_reduce"""
@@ -197,47 +208,27 @@ class TestHoldingState(unittest.TestCase):
         self.assertIn("reduce", types)
         self.assertIn("switch", types)
 
-    # ─── 下月口径验证（2026-07-18 重构：策略判断基于下月贴水）───
-    def test_reduce_basis_uses_next_month(self):
-        """reduce_basis 看的是下月贴水：当月贴水但下月升水 → 仍触发 reduce"""
+    # ─── roll_yield 口径验证（2026-07-19 重构：策略判断基于曲线斜率）───
+    def test_reduce_basis_when_curve_inverted(self):
+        """曲线倒挂（near > far）→ reduce_basis 触发，即使两合约都有贴水"""
         sigs = evaluate(HOLDING, make_metrics(
-            pe_pct=50, discount=-1, days=20, near_discount=5), self.t)
+            pe_pct=50, discount=3, days=20, near_discount=5), self.t)
         types = [s.type for s in sigs]
         self.assertIn("reduce", types)
 
-    def test_no_reduce_when_far_positive(self):
-        """下月仍贴水（>0）时，即使当月升水也不触发 reduce_basis"""
+    def test_no_reduce_when_curve_healthy(self):
+        """曲线向下倾斜（far > near）→ 不触发 reduce_basis，即使当月升水"""
         sigs = evaluate(HOLDING, make_metrics(
-            pe_pct=50, discount=5, days=20, near_discount=-1), self.t)
+            pe_pct=50, discount=8, days=20, near_discount=-1), self.t)
         reduce_sigs = [s for s in sigs if s.type == "reduce"]
         self.assertEqual(len(reduce_sigs), 0)
 
-    def test_warn_basis_signal_near_premium_far_discount(self):
-        """当月升水但下月仍贴水 → warn_reduce（提醒，不减仓）"""
-        sigs = evaluate(HOLDING, make_metrics(
-            pe_pct=50, discount=5, days=20, near_discount=-1), self.t)
-        warn_basis = [s for s in sigs if s.type == "warn_reduce"
-                      and "近月异常升水" in s.condition]
-        self.assertEqual(len(warn_basis), 1)
-        self.assertNotIn("reduce", [s.type for s in sigs])
-
-    def test_no_warn_basis_when_both_premium(self):
-        """当月和下月都升水 → 只触发 reduce，不触发 warn_basis"""
-        sigs = evaluate(HOLDING, make_metrics(
-            pe_pct=50, discount=-1, days=20, near_discount=-1), self.t)
-        types = [s.type for s in sigs]
-        self.assertIn("reduce", types)
-        warn_basis = [s for s in sigs if s.type == "warn_reduce"
-                      and "近月异常升水" in s.condition]
-        self.assertEqual(len(warn_basis), 0)
-
-    def test_no_warn_basis_when_both_discount(self):
-        """当月和下月都贴水 → 不触发 warn_basis（无近月异常）"""
+    def test_reduce_when_curve_flat(self):
+        """曲线扁平（far == near）→ roll_yield = 0 → 触发 reduce_basis"""
         sigs = evaluate(HOLDING, make_metrics(
             pe_pct=50, discount=5, days=20, near_discount=5), self.t)
-        warn_basis = [s for s in sigs if s.type == "warn_reduce"
-                      and "近月异常升水" in s.condition]
-        self.assertEqual(len(warn_basis), 0)
+        types = [s.type for s in sigs]
+        self.assertIn("reduce", types)
 
 
 class TestPriority(unittest.TestCase):

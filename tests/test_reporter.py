@@ -43,13 +43,12 @@ def make_metrics():
         "expected_return": {
             "roe_pct": 2.58 / 34.57 * 100,  # ≈ 7.46
             "dividend_yield_pct": 1.0,
-            "roll_yield_pct": 12.8,
             "pe_median_10y": 32.0,
             "valuation_change_pct": (32.0 - 34.57) / 34.57 * 100,  # ≈ -7.43
-            "annual_no_valuation_pct": 2.58 / 34.57 * 100 + 1.0 + 12.8,
-            "c3y_no_valuation_pct": ((1 + (2.58 / 34.57 * 100 + 1.0 + 12.8) / 100) ** 3 - 1) * 100,
-            "c5y_no_valuation_pct": ((1 + (2.58 / 34.57 * 100 + 1.0 + 12.8) / 100) ** 5 - 1) * 100,
-            "annual_with_mean_reversion_pct": (2.58 / 34.57 * 100 + 1.0 + 12.8
+            "annual_no_valuation_pct": 2.58 / 34.57 * 100 + 1.0,
+            "c3y_no_valuation_pct": ((1 + (2.58 / 34.57 * 100 + 1.0) / 100) ** 3 - 1) * 100,
+            "c5y_no_valuation_pct": ((1 + (2.58 / 34.57 * 100 + 1.0) / 100) ** 5 - 1) * 100,
+            "annual_with_mean_reversion_pct": (2.58 / 34.57 * 100 + 1.0
                                                 + (32.0 - 34.57) / 34.57 * 100),
         },
     }
@@ -99,20 +98,20 @@ class TestStatusLine(unittest.TestCase):
     def test_one_line_output(self):
         pos = make_position("empty")
         metrics = make_metrics()
-        line = render_status_line("2026-07-10", pos, metrics, "wait", 30.5)
+        line = render_status_line("2026-07-10", pos, metrics, "wait", 2.5)
         self.assertIn("2026-07-10", line)
         self.assertIn("空仓", line)
         self.assertIn("8198", line)
         self.assertIn("wait", line)
-        self.assertIn("30.5", line)
+        self.assertIn("展期收益", line)
 
-    def test_status_line_uses_next_month_label(self):
-        """status_line 应显示'下月贴水'标签（策略判断基于下月）"""
+    def test_status_line_uses_roll_yield_label(self):
+        """status_line 应显示'展期收益'标签（roll_yield = 下月-当月贴水）"""
         pos = make_position("empty")
         metrics = make_metrics()
-        line = render_status_line("2026-07-10", pos, metrics, "wait", 30.5)
-        self.assertIn("下月贴水", line)
-        self.assertNotIn("当月贴水", line)
+        line = render_status_line("2026-07-10", pos, metrics, "wait", 2.5)
+        self.assertIn("展期收益", line)
+        self.assertNotIn("下月贴水", line)
 
     def test_emoji_from_signal_type(self):
         """emoji 直接从 signal_type 映射，不再依赖 pe_pct 阈值"""
@@ -166,15 +165,16 @@ class TestOperationAdvice(unittest.TestCase):
 
 
 class TestExpectedReturnPanel(unittest.TestCase):
-    """三因子预期收益 panel 渲染。"""
+    """三因子预期收益 panel 渲染（ROE + 分红 + 估值变动，无展期收益分量）。"""
 
-    def test_panel_contains_three_factors(self):
+    def test_panel_contains_factors(self):
         er = make_metrics()["expected_return"]
         out = _expected_return_panel(er)
         self.assertIn("ROE", out)
         self.assertIn("分红率", out)
-        self.assertIn("展期收益", out)
         self.assertIn("估值回归", out)
+        # 展期收益不再作为单独分量（看 status_line 和期货合约表）
+        self.assertNotIn("展期收益（下月年化贴水）", out)
 
     def test_panel_shows_compounding(self):
         er = make_metrics()["expected_return"]
@@ -189,7 +189,6 @@ class TestExpectedReturnPanel(unittest.TestCase):
         sigs = [Signal("wait", 5, "PE 高", {}, {}, "继续等待")]
         report = generate_report("2026-07-10", pos, metrics, sigs)
         self.assertIn("预期收益", report)
-        self.assertIn("三因子", report)
         self.assertIn("ROE", report)
 
 
