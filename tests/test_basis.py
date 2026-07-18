@@ -127,5 +127,42 @@ class TestClassifyContract(unittest.TestCase):
         self.assertIsNotNone(expire)  # 仍返回交割日
 
 
+class TestClassifyAfterExpiry(unittest.TestCase):
+    """当月交割日（含）之后：旧当月已交割，下月自动升为新当月。"""
+
+    def test_day_before_expiry_no_shift(self):
+        """交割日前一天：IM2607 仍是当月（未交割）"""
+        ctype, _ = classify_contract("IM2607", date(2026, 7, 16))
+        self.assertEqual(ctype, "当月")
+
+    def test_expiry_day_old_current_dropped(self):
+        """交割日当天（today == 本月第三个周五，CFFEX 已盘后）：旧当月合约 ctype=None"""
+        ctype, _ = classify_contract("IM2607", date(2026, 7, 17))
+        self.assertIsNone(ctype)
+
+    def test_expiry_day_next_month_promoted(self):
+        """交割日盘后：下月合约升为当月"""
+        ctype, _ = classify_contract("IM2608", date(2026, 7, 17))
+        self.assertEqual(ctype, "当月")
+
+    def test_after_expiry_next_month_promoted(self):
+        """交割日后（周末重跑 / 周一）：IM2608 仍是当月"""
+        ctype, _ = classify_contract("IM2608", date(2026, 7, 20))
+        self.assertEqual(ctype, "当月")
+
+    def test_after_expiry_old_current_dropped(self):
+        """交割日后：IM2607 不再被识别"""
+        ctype, _ = classify_contract("IM2607", date(2026, 7, 20))
+        self.assertIsNone(ctype)
+
+    def test_december_expiry_rolls_to_january(self):
+        """12 月交割日后滚动到次年 1 月（月份溢出边界）"""
+        # 2026-12 第三个周五是 12-18；次年 1 月合约是 IM2701
+        ctype, _ = classify_contract("IM2701", date(2026, 12, 18))
+        self.assertEqual(ctype, "当月")
+        ctype, _ = classify_contract("IM2612", date(2026, 12, 18))
+        self.assertIsNone(ctype)
+
+
 if __name__ == "__main__":
     unittest.main()

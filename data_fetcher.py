@@ -46,7 +46,12 @@ def days_to_expire(today: date, expire_date: date) -> int:
 def classify_contract(
     symbol: str, today: date
 ) -> tuple[str | None, date | None]:
-    """识别 IM 合约类型（当月/下月/当季/下季）+ 交割日。非 IM 合约返回 (None, None)。"""
+    """识别 IM 合约类型（当月/下月/当季/下季）+ 交割日。非 IM 合约返回 (None, None)。
+
+    当月交割日（含）之后：CFFEX 日数据是盘后发布的，旧当月已交割 → 分类参考月份
+    移到下月，旧下月自动成为新当月。旧当月合约（ctype=None）在 fetch 时被过滤，
+    避免 DB 里残留"已交割合约 + 无意义基差"的行。
+    """
     if not symbol.startswith("IM") or len(symbol) != 6:
         return None, None
     try:
@@ -60,15 +65,25 @@ def classify_contract(
     year = 2000 + yy
     expire = third_friday(year, mm)
 
-    today_yyyymm = today.year * 12 + today.month
+    # 当月已交割（today >= 本月第三个周五）→ 分类参考月份移到下月
+    this_month_expire = third_friday(today.year, today.month)
+    if today >= this_month_expire:
+        if today.month == 12:
+            ref_y, ref_m = today.year + 1, 1
+        else:
+            ref_y, ref_m = today.year, today.month + 1
+    else:
+        ref_y, ref_m = today.year, today.month
+
+    ref_yyyymm = ref_y * 12 + ref_m
     contract_yyyymm = year * 12 + mm
-    if contract_yyyymm == today_yyyymm:
+    if contract_yyyymm == ref_yyyymm:
         return "当月", expire
-    if contract_yyyymm == today_yyyymm + 1:
+    if contract_yyyymm == ref_yyyymm + 1:
         return "下月", expire
 
     future_quarters = []
-    y, m = today.year, today.month
+    y, m = ref_y, ref_m
     m += 1
     if m > 12:
         m = 1
