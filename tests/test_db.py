@@ -213,6 +213,84 @@ class TestSignalCRUD(unittest.TestCase):
         self.assertEqual(sigs[0]["date"], "2026-07-10")  # 最新在前
         self.assertEqual(sigs[0]["signal_type"], "entry")
 
+    def test_insert_duplicate_signal_ignored(self):
+        """同一 (date, signal_type, condition) 第二次插入被忽略，不产生重复"""
+        row = {
+            "date": "2026-07-10", "signal_type": "wait",
+            "condition": "PE 70%", "current_value": "70%",
+            "threshold": "<50%", "suggestion": "继续等待",
+            "created_at": "2026-07-12T10:00:00",
+        }
+        sid1 = insert_signal(self.conn, dict(row))
+        sid2 = insert_signal(self.conn, dict(row))
+        # 第一次插入成功，第二次命中 UNIQUE 冲突被忽略
+        self.assertGreater(sid1, 0)
+        cnt = self.conn.execute("SELECT COUNT(*) FROM signals").fetchone()[0]
+        self.assertEqual(cnt, 1)
+
+    def test_different_condition_same_day_coexist(self):
+        """同一天不同 condition（如 reduce_pe + reduce_basis）都保留"""
+        for cond, sugg in [("PE > 85%", "估值过高"), ("贴水 ≤ 0", "升水失效")]:
+            insert_signal(self.conn, {
+                "date": "2026-07-10", "signal_type": "reduce",
+                "condition": cond, "current_value": "test",
+                "threshold": "test", "suggestion": sugg,
+                "created_at": "2026-07-12T10:00:00",
+            })
+        cnt = self.conn.execute("SELECT COUNT(*) FROM signals").fetchone()[0]
+        self.assertEqual(cnt, 2)
+
+    def test_migrate_signals_dedup_old_schema(self):
+        """老 schema（无 UNIQUE 约束）的 DB 重新 init_db 时自动清理重复"""
+        # 先关闭现有连接，用裸 sqlite3 建一个老 schema 的 DB
+        self.conn.close()
+        import sqlite3 as sq
+        raw = sq.connect(self.path)
+        raw.executescript("""
+            DROP TABLE IF EXISTS signals;
+            CREATE TABLE signals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date TEXT NOT NULL,
+                signal_type TEXT NOT NULL,
+                condition TEXT,
+                current_value TEXT,
+                threshold TEXT,
+                suggestion TEXT,
+                created_at TEXT NOT NULL
+            );
+        """)
+        # 插 4 行，其中 (2026-07-17, wait, X) 重复 3 次
+        for i in range(3):
+            raw.execute(
+                "INSERT INTO signals (date, signal_type, condition, current_value, "
+                "threshold, suggestion, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                ("2026-07-17", "wait", "PE 70%", "v", "t", "s", f"2026-07-18T0{i}:00:00"),
+            )
+        raw.execute(
+            "INSERT INTO signals (date, signal_type, condition, current_value, "
+            "threshold, suggestion, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("2026-07-17", "entry", "PE<50", "v", "t", "s", "2026-07-18T01:00:00"),
+        )
+        raw.commit()
+        raw.close()
+        # 重新 init_db 触发 migration
+        self.conn = init_db(Path(self.path))
+        rows = self.conn.execute(
+            "SELECT date, signal_type, condition FROM signals ORDER BY id"
+        ).fetchall()
+        # 原 4 行去重后剩 2 行
+        self.assertEqual(len(rows), 2)
+        # 保留最小 id 的那条
+        types = [r["signal_type"] for r in rows]
+        self.assertIn("wait", types)
+        self.assertIn("entry", types)
+        # 验证 unique index 已建
+        idx = self.conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='signals'"
+        ).fetchall()
+        idx_names = {r["name"] for r in idx}
+        self.assertIn("idx_signals_dedup", idx_names)
+
 
 if __name__ == "__main__":
     unittest.main()

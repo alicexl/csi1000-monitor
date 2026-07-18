@@ -46,7 +46,8 @@ CREATE TABLE IF NOT EXISTS signals (
     current_value TEXT,
     threshold     TEXT,
     suggestion    TEXT,
-    created_at    TEXT NOT NULL
+    created_at    TEXT NOT NULL,
+    UNIQUE(date, signal_type, condition)
 );
 
 CREATE TABLE IF NOT EXISTS position (
@@ -76,8 +77,35 @@ def init_db(db_path: Path) -> sqlite3.Connection:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA busy_timeout=5000")
         conn.executescript(SCHEMA)
+        _migrate_signals_unique(conn)
         conn.commit()
     return conn
+
+
+def _migrate_signals_unique(conn: sqlite3.Connection) -> None:
+    """老 DB signals 表无 UNIQUE(date, signal_type, condition) 约束 →
+    清理重复行（按分组保留最小 id）+ 建唯一索引。新 DB 已在 schema 里声明 UNIQUE，跳过。
+    """
+    has_unique = conn.execute(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='sqlite_autoindex_signals'"
+    ).fetchone()[0]
+    # 新 schema 里 UNIQUE 自动生成 sqlite_autoindex_signals；老 schema 没有
+    has_unique_explicit = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='signals'"
+    ).fetchone()
+    sql_def = has_unique_explicit[0] if has_unique_explicit else ""
+    if "UNIQUE(date, signal_type, condition)" in sql_def:
+        return  # 新 schema
+    # 老 schema：清理重复 + 加唯一索引
+    conn.execute(
+        "DELETE FROM signals WHERE id NOT IN ("
+        "  SELECT MIN(id) FROM signals GROUP BY date, signal_type, condition"
+        ")"
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_signals_dedup "
+        "ON signals(date, signal_type, condition)"
+    )
 
 
 def upsert_valuation(conn: sqlite3.Connection, row: dict[str, Any]) -> bool:
@@ -110,8 +138,11 @@ def upsert_contract(conn: sqlite3.Connection, row: dict[str, Any]) -> bool:
 
 
 def insert_signal(conn: sqlite3.Connection, signal: dict[str, Any]) -> int:
+    """插入信号；UNIQUE(date, signal_type, condition) 冲突则忽略。
+    返回 lastrowid（0 或负数表示未插入，命中冲突时 SQLite 返回 0）。
+    """
     sql = """
-    INSERT INTO signals (date, signal_type, condition, current_value,
+    INSERT OR IGNORE INTO signals (date, signal_type, condition, current_value,
                          threshold, suggestion, created_at)
     VALUES (:date, :signal_type, :condition, :current_value,
             :threshold, :suggestion, :created_at)
