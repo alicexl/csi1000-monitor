@@ -159,14 +159,6 @@ def annualized_enhancement(premium: float, spot: float, days: float) -> float:
     return premium / spot * 365.0 / days * 100.0
 
 
-def implied_forward(call_price: float, put_price: float, K: float, T: float,
-                    r: float = 0.02) -> float:
-    """Put-Call Parity 反推远期: F = K + (C - P) × e^(rT)。"""
-    if T <= 0:
-        return K + call_price - put_price
-    return K + (call_price - put_price) * math.exp(r * T)
-
-
 # ─── akshare 拉取 ────────────────────────────────────────────
 def retry(fn: Callable, retries: int = 3, delays: tuple = (2, 4, 8)) -> Any:
     """指数退避重试。全部失败返回 None。"""
@@ -341,18 +333,14 @@ def fetch_otm_call(
             k = float(r.iloc[7])  # 行权价
             diff = abs(k - target_strike)
             if diff < best_diff:
-                cl = r.iloc[2]  # call 最新价
                 cs = r.iloc[3]  # call 卖价
-                pl = r.iloc[11]  # put 最新价
-                if str(cl) in ("-", "", "None") or str(cs) in ("-", "", "None"):
+                if str(cs) in ("-", "", "None"):
                     continue
                 best_diff = diff
                 best = {
                     "symbol": mo_symbol,
                     "strike": k,
-                    "call_last": float(cl),
                     "call_sell": float(cs),
-                    "put_last": float(pl) if str(pl) not in ("-", "", "None") else None,
                     "oi": float(r.iloc[5]) if str(r.iloc[5]) not in ("-", "", "None") else 0,
                 }
         except (ValueError, TypeError, IndexError):
@@ -367,11 +355,6 @@ def fetch_otm_call(
     otm = (best["strike"] - spot) / spot * 100
     prob = prob_above_strike(spot, best["strike"], T, iv) if iv > 0 else 0
     enh_nominal = annualized_enhancement(premium, spot, days)
-    fwd = None
-    disc_implied = None
-    if best["put_last"] and best["put_last"] > 0:
-        fwd = implied_forward(premium, best["put_last"], best["strike"], T)
-        disc_implied = (spot - fwd) / spot * 100
 
     return {
         "symbol": best["symbol"],
@@ -386,7 +369,5 @@ def fetch_otm_call(
         "breakeven": best["strike"] + premium,
         "enhancement_nominal": enh_nominal,
         "oi": best["oi"],
-        "implied_forward": fwd,
-        "implied_discount": disc_implied,
         "fetched_at": datetime.now().isoformat(timespec="seconds"),
     }

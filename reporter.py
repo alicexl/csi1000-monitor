@@ -134,10 +134,6 @@ def _option_table(opt: dict) -> str:
         f"{opt['assign_prob']:.1f}% | {opt['breakeven']:.0f} | "
         f"{opt['oi']:.0f} |",
     ]
-    if opt.get("implied_discount") is not None:
-        lines.append("")
-        lines.append(f"期权隐含远期: {opt['implied_forward']:.0f}  "
-                     f"隐含贴水: {opt['implied_discount']:.2f}%")
     return "\n".join(lines)
 
 
