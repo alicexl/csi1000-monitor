@@ -222,15 +222,6 @@ pe_pct - pb_pct:
 
 **反直觉陷阱**：PB 高 ≠ 净资产高。PB = P/B，**PB 高 = 单位净资产卖得贵 = B 相对 P 偏低**。
 
-### 6. Windows GBK 控制台 emoji
-
-```python
-if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-```
-
-Windows 控制台默认 GBK，输出 🟢✅ 会崩。`main()` 入口先 reconfigure 为 UTF-8。
-
 ---
 
 ## 九、子命令完整参考
