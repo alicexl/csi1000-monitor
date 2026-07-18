@@ -8,11 +8,14 @@ EMPTY = "empty"
 HOLDING = "holding"
 
 
-def make_metrics(pe_pct=50, discount=5, days=10):
+def make_metrics(pe_pct=50, discount=5, days=10, near_discount=None):
+    """构造 signals 输入。discount = 下月年化贴水（策略判断主指标）；
+    near_discount = 当月年化贴水（默认等于 discount，warn 场景才需要显式区分）。"""
     return {
         "pe_ttm_pct_10y": pe_pct,
-        "current_month_discount": discount,
+        "current_month_discount": near_discount if near_discount is not None else discount,
         "current_month_days": days,
+        "next_month_discount": discount,
     }
 
 
@@ -102,6 +105,16 @@ class TestEmptyState(unittest.TestCase):
         we = next(s for s in sigs if s.type == "warn_entry")
         self.assertIn("升水", we.condition)
 
+    def test_warn_entry_near_premium_far_discount(self):
+        """PE够低 + 远月贴水但近月升水 → warn_entry（提醒：可等当月修复或直接买下月）"""
+        sigs = evaluate(EMPTY, make_metrics(
+            pe_pct=40, discount=5, near_discount=-1), self.t)
+        types = [s.type for s in sigs]
+        self.assertIn("warn_entry", types)
+        self.assertNotIn("entry", types)
+        we = next(s for s in sigs if s.type == "warn_entry")
+        self.assertIn("近月异常", we.condition)
+
 
 class TestHoldingState(unittest.TestCase):
     def setUp(self):
@@ -183,6 +196,48 @@ class TestHoldingState(unittest.TestCase):
         types = [s.type for s in sigs]
         self.assertIn("reduce", types)
         self.assertIn("switch", types)
+
+    # ─── 下月口径验证（2026-07-18 重构：策略判断基于下月贴水）───
+    def test_reduce_basis_uses_next_month(self):
+        """reduce_basis 看的是下月贴水：当月贴水但下月升水 → 仍触发 reduce"""
+        sigs = evaluate(HOLDING, make_metrics(
+            pe_pct=50, discount=-1, days=20, near_discount=5), self.t)
+        types = [s.type for s in sigs]
+        self.assertIn("reduce", types)
+
+    def test_no_reduce_when_far_positive(self):
+        """下月仍贴水（>0）时，即使当月升水也不触发 reduce_basis"""
+        sigs = evaluate(HOLDING, make_metrics(
+            pe_pct=50, discount=5, days=20, near_discount=-1), self.t)
+        reduce_sigs = [s for s in sigs if s.type == "reduce"]
+        self.assertEqual(len(reduce_sigs), 0)
+
+    def test_warn_basis_signal_near_premium_far_discount(self):
+        """当月升水但下月仍贴水 → warn_reduce（提醒，不减仓）"""
+        sigs = evaluate(HOLDING, make_metrics(
+            pe_pct=50, discount=5, days=20, near_discount=-1), self.t)
+        warn_basis = [s for s in sigs if s.type == "warn_reduce"
+                      and "近月异常升水" in s.condition]
+        self.assertEqual(len(warn_basis), 1)
+        self.assertNotIn("reduce", [s.type for s in sigs])
+
+    def test_no_warn_basis_when_both_premium(self):
+        """当月和下月都升水 → 只触发 reduce，不触发 warn_basis"""
+        sigs = evaluate(HOLDING, make_metrics(
+            pe_pct=50, discount=-1, days=20, near_discount=-1), self.t)
+        types = [s.type for s in sigs]
+        self.assertIn("reduce", types)
+        warn_basis = [s for s in sigs if s.type == "warn_reduce"
+                      and "近月异常升水" in s.condition]
+        self.assertEqual(len(warn_basis), 0)
+
+    def test_no_warn_basis_when_both_discount(self):
+        """当月和下月都贴水 → 不触发 warn_basis（无近月异常）"""
+        sigs = evaluate(HOLDING, make_metrics(
+            pe_pct=50, discount=5, days=20, near_discount=5), self.t)
+        warn_basis = [s for s in sigs if s.type == "warn_reduce"
+                      and "近月异常升水" in s.condition]
+        self.assertEqual(len(warn_basis), 0)
 
 
 class TestPriority(unittest.TestCase):

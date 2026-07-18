@@ -85,6 +85,91 @@ def pe_pb_divergence(pe_pct: float, pb_pct: float) -> float:
     return pe_pct - pb_pct
 
 
+# 预期收益计算的默认假设（来自杨康平《股指期货吃贴水策略》PDF 经验值）
+DEFAULT_DIVIDEND_YIELD = 1.0  # 中证1000 近年股息率约 1-2%，取保守下限
+
+
+def _window_median(history: list[dict], field: str, days: int) -> float | None:
+    """指定天数窗口内某字段的中位数（cutoff 用今日午夜，与 _filter_by_window 一致）。"""
+    today_midnight = datetime.now().replace(
+        hour=0, minute=0, second=0, microsecond=0)
+    cutoff = today_midnight - timedelta(days=days)
+    values = []
+    for row in history:
+        d = row.get("date")
+        v = row.get(field)
+        if d is None or v is None:
+            continue
+        try:
+            row_date = datetime.strptime(str(d)[:10], "%Y-%m-%d")
+        except (ValueError, TypeError):
+            continue
+        if row_date >= cutoff:
+            values.append(float(v))
+    if not values:
+        return None
+    values.sort()
+    n = len(values)
+    mid = n // 2
+    if n % 2 == 1:
+        return values[mid]
+    return (values[mid - 1] + values[mid]) / 2
+
+
+def _compute_expected_return(
+    close: float, pe_ttm: float, pb: float,
+    next_month_discount: float, pe_median_10y: float | None,
+    dividend_yield: float = DEFAULT_DIVIDEND_YIELD,
+) -> dict:
+    """三因子预期收益模型（杨康平 PDF 框架）：
+
+        预期年化 = 贴水收益(roll yield) + ROE + 分红 + 估值变动
+
+    - ROE = PB / PE = (P/B) / (P/E) = E/B（不需要额外数据源，用现有 PE/PB 反推）
+    - 分红率：默认 1.0%（PDF 经验值，中证1000 历史约 1-2%）
+    - 展期收益：下月年化贴水（吃贴水策略的核心收益）
+    - 估值回归：如果 PE 回到 10 年中位数，估值变动 = (pe_median - pe_now) / pe_now
+      （正值 = 低估有修复空间；负值 = 高估有回落风险）
+
+    返回 dict：各分量 + 估值不变年化 + 3年/5年复利 + 估值回归 1 年预期。
+    """
+    if pe_ttm <= 0 or pb <= 0:
+        return {
+            "roe_pct": 0.0, "dividend_yield_pct": dividend_yield,
+            "roll_yield_pct": next_month_discount,
+            "pe_median_10y": pe_median_10y,
+            "valuation_change_pct": 0.0,
+            "annual_no_valuation_pct": next_month_discount + dividend_yield,
+            "c3y_no_valuation_pct": 0.0, "c5y_no_valuation_pct": 0.0,
+            "annual_with_mean_reversion_pct": next_month_discount + dividend_yield,
+        }
+
+    roe = pb / pe_ttm * 100  # E/B = (P/B)/(P/E) 百分比形式
+    roll = next_month_discount
+    div = dividend_yield
+    base = roe + div + roll  # 估值不变时的年化（%）
+
+    if pe_median_10y and pe_median_10y > 0:
+        val_change = (pe_median_10y - pe_ttm) / pe_ttm * 100
+    else:
+        val_change = 0.0
+
+    c3y = ((1 + base / 100) ** 3 - 1) * 100
+    c5y = ((1 + base / 100) ** 5 - 1) * 100
+
+    return {
+        "roe_pct": roe,
+        "dividend_yield_pct": div,
+        "roll_yield_pct": roll,
+        "pe_median_10y": pe_median_10y,
+        "valuation_change_pct": val_change,
+        "annual_no_valuation_pct": base,
+        "c3y_no_valuation_pct": c3y,
+        "c5y_no_valuation_pct": c5y,
+        "annual_with_mean_reversion_pct": base + val_change,
+    }
+
+
 ROOT = Path(__file__).parent
 DB_PATH = ROOT / "csi1000_monitor.db"
 REPORTS_DIR = ROOT / "reports"
@@ -124,27 +209,24 @@ def _resolve_trade_date(spot_close: float,
     return (date.today(), [])
 
 
-def _extract_signal_metrics(metrics: dict, switch_days: int = 7) -> dict:
+def _extract_signal_metrics(metrics: dict) -> dict:
     """从 metrics 抽出 signals.evaluate 需要的指标 dict。
 
-    当月临近交割（剩余天数 < switch_days，含已交割 days=0）时，
-    信号判定 fallback 到下月合约 —— 和 switch_signal 持仓侧切换规则对齐，
-    也保证入场信号参考的是"实际可交易"的近月合约。
+    策略判断基于**下月年化贴水**（展期吃贴水策略的核心——远月有贴水才有展期收益）。
+    当月贴水仅作为 warn 信号参考（近月异常升水但远月仍贴水时提醒）。
+    days 用于 switch 信号（当月临交割时切月）。
     """
     contracts = metrics.get("contracts", [])
     cur_month = next(
         (c for c in contracts if c["contract_type"] == "当月"), None)
     next_month = next(
         (c for c in contracts if c["contract_type"] == "下月"), None)
-    if cur_month and cur_month.get("days_to_expire", 999) < switch_days and next_month:
-        active = next_month
-    else:
-        active = cur_month
     return {
         "pe_ttm_pct_10y": metrics["pe_ttm_pct"].get("10y", {}).get("pct")
                           or 100,  # 样本不足（None）→ 100，保守 wait 不入场
-        "current_month_discount": active["annualized_discount"] if active else 0,
-        "current_month_days": active["days_to_expire"] if active else 999,
+        "current_month_discount": cur_month["annualized_discount"] if cur_month else 0,
+        "current_month_days": cur_month["days_to_expire"] if cur_month else 999,
+        "next_month_discount": next_month["annualized_discount"] if next_month else 0,
     }
 
 
@@ -225,6 +307,9 @@ def _build_metrics(conn) -> dict:
     pb = latest.get("pb") or 0
     close = latest.get("close") or 0
 
+    # 10 年窗口 PE_TTM 中位数（用于估值回归预期）
+    pe_median_10y = _window_median(history, "pe_ttm", WINDOW_DAYS["10y"])
+
     # 主力连续贴水分位（近2年）
     main_hist = query_main_continuous_history(conn, days=730)
     main_bases = [abs(r["basis"]) for r in main_hist if r.get("basis") is not None]
@@ -253,6 +338,13 @@ def _build_metrics(conn) -> dict:
         "main_continuous_discount_pct": main_pct,
     }
 
+    # 预期收益三因子（PDF 框架：贴水 + ROE + 分红 + 估值变动）
+    next_month = next(
+        (c for c in contracts if c["contract_type"] == "下月"), None)
+    next_disc = next_month["annualized_discount"] if next_month else 0
+    metrics["expected_return"] = _compute_expected_return(
+        close, pe_ttm, pb, next_disc, pe_median_10y)
+
     # 期权增厚分析（实时拉取，失败不阻断）
     try:
         metrics["otm_call"] = fetch_otm_call(
@@ -272,7 +364,7 @@ def _generate_report() -> int:
         print("[ERR] DB 无数据，请先运行 run", file=sys.stderr)
         return 1
 
-    sigs = evaluate(position.status, _extract_signal_metrics(metrics, THRESHOLDS.switch_days), THRESHOLDS)
+    sigs = evaluate(position.status, _extract_signal_metrics(metrics), THRESHOLDS)
 
     # 写入 signals 表
     for s in sigs:
@@ -305,13 +397,13 @@ def cmd_status() -> int:
         print("[ERR] DB 无数据，请先运行 run", file=sys.stderr)
         return 1
 
-    sig_metrics = _extract_signal_metrics(metrics, THRESHOLDS.switch_days)
+    sig_metrics = _extract_signal_metrics(metrics)
     sigs = evaluate(position.status, sig_metrics, THRESHOLDS)
     top = min(sigs, key=lambda s: s.priority) if sigs else None
     sig_type = top.type if top else "none"
 
     print(render_status_line(metrics["date"], position, metrics, sig_type,
-                             sig_metrics["current_month_discount"]))
+                             sig_metrics["next_month_discount"]))
     conn.close()
     return 0
 

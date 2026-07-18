@@ -4,7 +4,7 @@ import unittest
 
 from signals import Signal, Position, Thresholds
 from reporter import (generate_report, render_status_line, format_signals_section,
-                      _fmt_pct_window)
+                      _fmt_pct_window, _expected_return_panel)
 
 
 def make_position(status="empty"):
@@ -40,6 +40,18 @@ def make_metrics():
              "basis": -100.31, "annualized_discount": 12.8},
         ],
         "main_continuous_discount_pct": 65.0,
+        "expected_return": {
+            "roe_pct": 2.58 / 34.57 * 100,  # ≈ 7.46
+            "dividend_yield_pct": 1.0,
+            "roll_yield_pct": 12.8,
+            "pe_median_10y": 32.0,
+            "valuation_change_pct": (32.0 - 34.57) / 34.57 * 100,  # ≈ -7.43
+            "annual_no_valuation_pct": 2.58 / 34.57 * 100 + 1.0 + 12.8,
+            "c3y_no_valuation_pct": ((1 + (2.58 / 34.57 * 100 + 1.0 + 12.8) / 100) ** 3 - 1) * 100,
+            "c5y_no_valuation_pct": ((1 + (2.58 / 34.57 * 100 + 1.0 + 12.8) / 100) ** 5 - 1) * 100,
+            "annual_with_mean_reversion_pct": (2.58 / 34.57 * 100 + 1.0 + 12.8
+                                                + (32.0 - 34.57) / 34.57 * 100),
+        },
     }
 
 
@@ -94,6 +106,14 @@ class TestStatusLine(unittest.TestCase):
         self.assertIn("wait", line)
         self.assertIn("30.5", line)
 
+    def test_status_line_uses_next_month_label(self):
+        """status_line 应显示'下月贴水'标签（策略判断基于下月）"""
+        pos = make_position("empty")
+        metrics = make_metrics()
+        line = render_status_line("2026-07-10", pos, metrics, "wait", 30.5)
+        self.assertIn("下月贴水", line)
+        self.assertNotIn("当月贴水", line)
+
     def test_emoji_from_signal_type(self):
         """emoji 直接从 signal_type 映射，不再依赖 pe_pct 阈值"""
         pos = make_position("holding")
@@ -145,8 +165,35 @@ class TestOperationAdvice(unittest.TestCase):
         self.assertNotIn("考虑换月", advice_section)
 
 
+class TestExpectedReturnPanel(unittest.TestCase):
+    """三因子预期收益 panel 渲染。"""
+
+    def test_panel_contains_three_factors(self):
+        er = make_metrics()["expected_return"]
+        out = _expected_return_panel(er)
+        self.assertIn("ROE", out)
+        self.assertIn("分红率", out)
+        self.assertIn("展期收益", out)
+        self.assertIn("估值回归", out)
+
+    def test_panel_shows_compounding(self):
+        er = make_metrics()["expected_return"]
+        out = _expected_return_panel(er)
+        self.assertIn("估值不变年化预期", out)
+        self.assertIn("3 年复利", out)
+        self.assertIn("5 年复利", out)
+
+    def test_panel_in_full_report(self):
+        pos = make_position()
+        metrics = make_metrics()
+        sigs = [Signal("wait", 5, "PE 高", {}, {}, "继续等待")]
+        report = generate_report("2026-07-10", pos, metrics, sigs)
+        self.assertIn("预期收益", report)
+        self.assertIn("三因子", report)
+        self.assertIn("ROE", report)
+
+
 class TestFmtPctWindow(unittest.TestCase):
-    """置信度标注：样本数 / 预期 比例决定展示形式。"""
 
     def test_sufficient_samples_no_warning(self):
         """n >= expected*0.8 → 正常 '72.3% (n=2440/2440)'"""

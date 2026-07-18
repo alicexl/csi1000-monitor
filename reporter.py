@@ -86,6 +86,42 @@ def _contracts_table(metrics: dict) -> str:
     return header + "\n" + "\n".join(rows) if rows else header + "\n| 无数据 |"
 
 
+def _expected_return_panel(er: dict) -> str:
+    """三因子预期收益 panel（PDF 杨康平框架：贴水 + ROE + 分红 + 估值变动）。
+
+    展示：
+    - 三项分量（ROE 反推、分红率、下月贴水年化）
+    - 估值回归预期（PE 回到 10 年中位数的变动）
+    - 估值不变时的年化预期 + 3年/5年复利
+    """
+    roe = er["roe_pct"]
+    div = er["dividend_yield_pct"]
+    roll = er["roll_yield_pct"]
+    val = er["valuation_change_pct"]
+    base = er["annual_no_valuation_pct"]
+    pe_med = er.get("pe_median_10y")
+
+    pe_med_str = f"{pe_med:.1f}" if pe_med else "N/A"
+    val_sign = "+" if val >= 0 else ""
+
+    lines = [
+        "| 分量 | 值 | 说明 |",
+        "|---|---|---|",
+        f"| ROE（PB/PE 反推） | {roe:+.1f}% | 估值不变时的长期涨幅代理 |",
+        f"| 分红率 | +{div:.1f}% | 经验默认值（中证1000 约 1-2%）|",
+        f"| 展期收益（下月年化贴水） | {roll:+.1f}% | 吃贴水策略核心收益 |",
+        f"| 估值回归（PE→10y 中位 {pe_med_str}） | {val_sign}{val:.1f}% | 1 年假设回归 |",
+        "",
+        f"**估值不变年化预期**：`{base:+.1f}%` "
+        f"（3 年复利 **{er['c3y_no_valuation_pct']:+.1f}%**，"
+        f"5 年复利 **{er['c5y_no_valuation_pct']:+.1f}%**）",
+        "",
+        f"**含估值回归 1 年预期**：`{er['annual_with_mean_reversion_pct']:+.1f}%` "
+        f"（假设 PE 1 年内回到 10 年中位数）",
+    ]
+    return "\n".join(lines)
+
+
 def _option_table(opt: dict) -> str:
     """卖 call 增厚分析表。"""
     lines = [
@@ -140,6 +176,12 @@ def generate_report(
         lines.append(f"PE-PB 背离：{div:+.1f}pp（基本一致）")
     lines.append("")
 
+    er = metrics.get("expected_return")
+    if er:
+        lines.append("## 预期收益（三因子模型：贴水 + ROE + 分红 + 估值变动）")
+        lines.append(_expected_return_panel(er))
+        lines.append("")
+
     lines.append("## 期货合约（IM 当日）")
     lines.append(_contracts_table(metrics))
     lines.append("")
@@ -178,10 +220,10 @@ def generate_report(
 
 def render_status_line(
     report_date: str, position: Position, metrics: dict,
-    signal_type: str, active_discount: float,
+    signal_type: str, next_month_discount: float,
 ) -> str:
-    """status 子命令一行输出。active_discount 由调用方通过 _extract_signal_metrics 算好，
-    避免重复实现 fallback 逻辑（当月已交割 → 下月）。emoji 直接从 signal_type 映射，
+    """status 子命令一行输出。next_month_discount 由调用方通过 _extract_signal_metrics 算好，
+    策略判断基于下月贴水（展期收益来源）。emoji 直接从 signal_type 映射，
     避免在这里重复判断阈值（升水/switch 状态也能正确反映）。
     """
     state = position.status
@@ -193,4 +235,4 @@ def render_status_line(
 
     return (f"{report_date} | {state_cn} | {close:.0f}点 | "
             f"PE_TTM {pe:.1f} ({pe_pct:.1f}%{emoji}) | "
-            f"当月贴水 {active_discount:+.1f}% | 信号: {signal_type}")
+            f"下月贴水 {next_month_discount:+.1f}% | 信号: {signal_type}")
