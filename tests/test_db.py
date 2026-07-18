@@ -209,6 +209,94 @@ class TestContractCRUD(unittest.TestCase):
         self.assertEqual(len(hist), 3)
 
 
+class TestMainContinuousBasisMigration(unittest.TestCase):
+    """老 DB 的 IM0 basis 用了今日现货（bug），迁移到 per-date 现货。"""
+
+    def setUp(self):
+        self._fd, self.path = tempfile.mkstemp(suffix=".db")
+        os.close(self._fd)
+
+    def tearDown(self):
+        if hasattr(self, "conn"):
+            self.conn.close()
+        os.unlink(self.path)
+
+    def _seed_old_db_with_bug(self):
+        """直接用低层 sqlite3 建 DB + 灌 buggy 数据，模拟未迁移的老库。"""
+        import sqlite3
+        conn = sqlite3.connect(self.path)
+        conn.executescript(SCHEMA)
+        # 估值：2026-07-08 现货 8000，2026-07-10 现货 8170
+        for d, c in [("2026-07-08", 8000.0), ("2026-07-10", 8170.0)]:
+            conn.execute(
+                "INSERT INTO daily_valuation (date, close, pe_static, pe_ttm, "
+                "pe_ttm_eq, pe_static_med, pe_ttm_med, pb, pb_med, pb_w, fetched_at) "
+                "VALUES (?, ?, 0, 0, 0, 0, 0, 0, 0, 0, 't')",
+                (d, c),
+            )
+        # buggy IM0：旧 fetch 用 today_spot=8198 算所有历史行
+        for d, close in [("2026-07-08", 7950), ("2026-07-10", 8150)]:
+            conn.execute(
+                "INSERT INTO daily_contracts (date, symbol, name, contract_type, "
+                "close, settle, volume, open_interest, expire_date, days_to_expire, "
+                "basis, annualized_discount, fetched_at) "
+                "VALUES (?, 'IM0', '主力连续', '主力', ?, ?, 0, 0, NULL, NULL, ?, NULL, 't')",
+                (d, close, close, close - 8198),
+            )
+        conn.commit()
+        conn.close()
+
+    def test_migration_recomputes_basis(self):
+        self._seed_old_db_with_bug()
+        self.conn = init_db(Path(self.path))  # 触发迁移
+        hist = query_main_continuous_history(self.conn, days=10)
+        by_date = {r["date"]: r["basis"] for r in hist}
+        # 修复后：2026-07-08 → 7950 - 8000 = -50（原 buggy 值 -248）
+        self.assertAlmostEqual(by_date["2026-07-08"], -50.0)
+        # 2026-07-10 → 8150 - 8170 = -20（原 buggy 值 -48）
+        self.assertAlmostEqual(by_date["2026-07-10"], -20.0)
+
+    def test_migration_is_idempotent(self):
+        self._seed_old_db_with_bug()
+        self.conn = init_db(Path(self.path))
+        self.conn.close()
+        # 第二次 init 不应再改动（user_version 已 = 1）
+        self.conn = init_db(Path(self.path))
+        hist = query_main_continuous_history(self.conn, days=10)
+        by_date = {r["date"]: r["basis"] for r in hist}
+        self.assertAlmostEqual(by_date["2026-07-08"], -50.0)
+        self.assertAlmostEqual(by_date["2026-07-10"], -20.0)
+
+    def test_migration_skips_rows_without_valuation(self):
+        """估值表缺该日期时，basis 保持原值（不强行覆盖为 NULL）"""
+        import sqlite3
+        conn = sqlite3.connect(self.path)
+        conn.executescript(SCHEMA)
+        conn.execute(
+            "INSERT INTO daily_valuation (date, close, pe_static, pe_ttm, "
+            "pe_ttm_eq, pe_static_med, pe_ttm_med, pb, pb_med, pb_w, fetched_at) "
+            "VALUES ('2026-07-10', 8170.0, 0, 0, 0, 0, 0, 0, 0, 0, 't')"
+        )
+        # 2026-07-08 没有估值行
+        for d, close in [("2026-07-08", 7950), ("2026-07-10", 8150)]:
+            conn.execute(
+                "INSERT INTO daily_contracts (date, symbol, name, contract_type, "
+                "close, settle, volume, open_interest, expire_date, days_to_expire, "
+                "basis, annualized_discount, fetched_at) "
+                "VALUES (?, 'IM0', '主力连续', '主力', ?, ?, 0, 0, NULL, NULL, ?, NULL, 't')",
+                (d, close, close, close - 8198),
+            )
+        conn.commit()
+        conn.close()
+        self.conn = init_db(Path(self.path))
+        hist = query_main_continuous_history(self.conn, days=10)
+        by_date = {r["date"]: r["basis"] for r in hist}
+        # 有估值 → 重算
+        self.assertAlmostEqual(by_date["2026-07-10"], -20.0)
+        # 无估值 → 保持原 buggy 值（-248）
+        self.assertAlmostEqual(by_date["2026-07-08"], -248.0)
+
+
 class TestSignalCRUD(unittest.TestCase):
     def setUp(self):
         self._fd, self.path = tempfile.mkstemp(suffix=".db")

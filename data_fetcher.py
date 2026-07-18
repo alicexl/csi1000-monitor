@@ -221,9 +221,16 @@ def fetch_valuation() -> list[dict]:
     return rows
 
 
-def fetch_main_continuous(spot_close: float, ref_date: date) -> list[dict]:
-    """拉主力连续 IM0 全历史。spot_close 用于算基差。
-    注：主力连续没有交割日，days_to_expire/expire_date 留空。
+def fetch_main_continuous(
+    spot_by_date: dict[str, float], ref_date: date
+) -> list[dict]:
+    """拉主力连续 IM0 全历史。
+
+    spot_by_date 是 {date_str: spot_close} 映射（来自 daily_valuation 表），
+    每行用对应日期的现货收盘算基差。缺失日期的 basis = None（估值数据未覆盖的
+    假日/数据源缺失），后续分位计算会过滤掉。
+
+    主力连续无交割日，days_to_expire/expire_date 留空，annualized_discount=None。
     """
     df = retry(lambda: ak.futures_main_sina(symbol="IM0"))
     if df is None:
@@ -234,6 +241,8 @@ def fetch_main_continuous(spot_close: float, ref_date: date) -> list[dict]:
         try:
             close = float(r["收盘价"])
             d = str(r["日期"])[:10]
+            spot = spot_by_date.get(d)
+            basis = compute_basis(close, spot) if spot is not None else None
             rows.append({
                 "date": d,
                 "symbol": "IM0",
@@ -245,7 +254,7 @@ def fetch_main_continuous(spot_close: float, ref_date: date) -> list[dict]:
                 "open_interest": float(r.get("持仓量", 0)),
                 "expire_date": None,
                 "days_to_expire": None,
-                "basis": compute_basis(close, spot_close),
+                "basis": basis,
                 "annualized_discount": None,  # 主力连续无交割日，无法年化
                 "fetched_at": datetime.now().isoformat(timespec="seconds"),
             })

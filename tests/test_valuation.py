@@ -69,24 +69,12 @@ class TestComputePctForWindows(unittest.TestCase):
         # all 窗口样本 150 个，<=75 的有 75 个 → 50%
         self.assertAlmostEqual(result["all"]["pct"], 50.0)
         self.assertEqual(result["all"]["n"], 150)
-        self.assertIsNone(result["all"]["expected"])
-
-    def test_expected_samples_for_windows(self):
-        """10y/5y 窗口返回 expected；all 是 None"""
-        history = [{"date": f"2024-{(i % 12) + 1:02d}-15", "pe_ttm": i + 1}
-                   for i in range(150)]
-        current = {"pe_ttm": 75}
-        result = compute_pct_for_windows(
-            history, current, "pe_ttm", ["10y", "5y", "all"])
-        self.assertEqual(result["10y"]["expected"], 2440)
-        self.assertEqual(result["5y"]["expected"], 1220)
-        self.assertIsNone(result["all"]["expected"])
 
     def test_missing_field_returns_none_pct(self):
         """current 缺字段 → 所有窗口 pct=None, n=0"""
         result = compute_pct_for_windows(
             [{"date": "2026-01-01"}], {"pe_ttm": 30}, "pe_ttm", ["all"])
-        self.assertEqual(result["all"], {"pct": None, "n": 0, "expected": None})
+        self.assertEqual(result["all"], {"pct": None, "n": 0})
 
 
 class TestPePbDivergence(unittest.TestCase):

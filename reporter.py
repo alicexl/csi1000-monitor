@@ -32,27 +32,18 @@ def format_signals_section(signals: list[Signal], state: str) -> str:
 
 
 def _fmt_pct_window(entry) -> str:
-    """格式化单个窗口的分位文本。entry = {pct, n, expected}。
+    """格式化单个窗口的分位文本。entry = {pct, n}。
 
-    - 样本足够（n >= expected*0.8 或 all 窗口 n >= MIN_SAMPLES）:  "72.3% (n=2440)"
-    - 样本偏少但仍算出分位:  "72.3% ⚠ (n=150/2440)"
-    - 样本绝对不足（pct=None）:  "N/A ⚠ (n=50/2440)"
-    - 全历史不显示 /expected:  "65.0% (n=2900)"
+    - 正常：  "72.3% (n=2427)"
+    - 样本绝对不足（pct=None，n < MIN_SAMPLES）:  "N/A ⚠ (n=50)"
     """
     if entry is None:
         return "N/A"
     pct = entry.get("pct")
     n = entry.get("n", 0)
-    expected = entry.get("expected")
-    if expected:
-        n_tag = f"n={n}/{expected}"
-    else:
-        n_tag = f"n={n}"
     if pct is None:
-        return f"N/A ⚠ ({n_tag})"
-    if expected and n < expected * 0.8:
-        return f"{pct:.1f}% ⚠ ({n_tag})"
-    return f"{pct:.1f}% ({n_tag})"
+        return f"N/A ⚠ (n={n})"
+    return f"{pct:.1f}% (n={n})"
 
 
 def _valuation_table(metrics: dict) -> str:

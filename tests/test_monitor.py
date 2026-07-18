@@ -29,9 +29,9 @@ class TestExtractSignalMetrics(unittest.TestCase):
     def setUp(self):
         self.metrics = {
             "pe_ttm_pct": {
-                "10y": {"pct": 72.0, "n": 2440, "expected": 2440},
-                "5y": {"pct": 80.0, "n": 1220, "expected": 1220},
-                "all": {"pct": 60.0, "n": 2900, "expected": None},
+                "10y": {"pct": 72.0, "n": 2440},
+                "5y": {"pct": 80.0, "n": 1220},
+                "all": {"pct": 60.0, "n": 2900},
             },
             "contracts": [],
         }

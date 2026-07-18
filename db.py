@@ -78,8 +78,28 @@ def init_db(db_path: Path) -> sqlite3.Connection:
         conn.execute("PRAGMA busy_timeout=5000")
         conn.executescript(SCHEMA)
         _migrate_signals_unique(conn)
+        _migrate_main_continuous_basis(conn)
         conn.commit()
     return conn
+
+
+def _migrate_main_continuous_basis(conn: sqlite3.Connection) -> None:
+    """一次性修复老 DB 的主力连续 IM0 基差。
+
+    旧 fetch_main_continuous 用'今日现货'算所有历史行的 basis，导致历史 |basis|
+    偏大、今日 |basis| 几乎永远最小 → 主力贴水分位总是 ~5%。修复：用每行
+    date 对应的现货收盘重算。user_version=1 标记已迁移，避免重复执行。
+    """
+    version = conn.execute("PRAGMA user_version").fetchone()[0]
+    if version >= 1:
+        return
+    conn.execute(
+        "UPDATE daily_contracts SET basis = close - ("
+        "  SELECT close FROM daily_valuation WHERE date = daily_contracts.date"
+        ") WHERE symbol = 'IM0' AND basis IS NOT NULL "
+        "  AND EXISTS (SELECT 1 FROM daily_valuation WHERE date = daily_contracts.date)"
+    )
+    conn.execute("PRAGMA user_version = 1")
 
 
 def _migrate_signals_unique(conn: sqlite3.Connection) -> None:

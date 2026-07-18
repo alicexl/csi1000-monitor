@@ -18,8 +18,6 @@ from reporter import generate_report, render_status_line
 
 # ─── 多区间分位算法（原 valuation.py）─────────────────────────
 WINDOW_DAYS = {"10y": 3652, "5y": 1826, "all": 99999}
-# 各窗口预期样本数（A 股每年约 244 交易日）；all 不设预期（全历史即全样本）
-EXPECTED_SAMPLES = {"10y": 2440, "5y": 1220, "all": None}
 MIN_SAMPLES = 100  # 绝对阈值（约 5 个月交易日），低于此分位直接 N/A
 
 
@@ -54,16 +52,14 @@ def _filter_by_window(history: list[dict], field: str, days: int) -> list[float]
 def compute_pct_for_windows(
     history: list[dict], current: dict, field: str, windows: list[str],
 ) -> dict[str, dict]:
-    """算多区间分位。返回 {window_name: {pct, n, expected}}。
+    """算多区间分位。返回 {window_name: {pct, n}}。
 
     - pct: 分位值；样本不足（n < MIN_SAMPLES）时为 None
     - n: 实际样本数
-    - expected: 预期样本数（A 股 244/年）；all 窗口为 None
     """
     current_val = current.get(field)
     if current_val is None:
-        return {w: {"pct": None, "n": 0, "expected": EXPECTED_SAMPLES.get(w)}
-                for w in windows}
+        return {w: {"pct": None, "n": 0} for w in windows}
     current_val = float(current_val)
     result = {}
     for w in windows:
@@ -71,7 +67,7 @@ def compute_pct_for_windows(
         series = _filter_by_window(history, field, days)
         n = len(series)
         pct = percentile(series, current_val) if n >= MIN_SAMPLES else None
-        result[w] = {"pct": pct, "n": n, "expected": EXPECTED_SAMPLES.get(w)}
+        result[w] = {"pct": pct, "n": n}
     return result
 
 
@@ -271,7 +267,10 @@ def _scan() -> int:
         print(f"[INFO] 今日 CFFEX 数据未发布，使用 {today}", file=sys.stderr)
 
     print("[2/3] 拉取主力连续 IM0...", flush=True)
-    main_rows = fetch_main_continuous(spot_close, today)
+    # 用各历史日期对应的现货收盘算基差（不能用今天的现货，否则历史 basis 全部偏大）
+    val_hist = query_valuation_history(conn, days=99999)
+    spot_by_date = {r["date"]: r["close"] for r in val_hist if r.get("close")}
+    main_rows = fetch_main_continuous(spot_by_date, today)
     main_ins = main_upd = 0
     for r in main_rows:
         if upsert_contract(conn, r) == "inserted":

@@ -11,8 +11,8 @@ def make_position(status="empty"):
     return Position(status=status)
 
 
-def _pct_entry(pct, n=2440, expected=2440):
-    return {"pct": pct, "n": n, "expected": expected}
+def _pct_entry(pct, n=2440):
+    return {"pct": pct, "n": n}
 
 
 def make_metrics():
@@ -22,12 +22,12 @@ def make_metrics():
         "pe_ttm": 34.57,
         "pe_static": 35.77,
         "pb": 2.58,
-        "pe_ttm_pct": {"10y": _pct_entry(81.8), "5y": _pct_entry(94.1, 1220, 1220),
-                       "all": _pct_entry(69.6, 2900, None)},
-        "pe_static_pct": {"10y": _pct_entry(75.9), "5y": _pct_entry(86.5, 1220, 1220),
-                          "all": _pct_entry(64.6, 2900, None)},
-        "pb_pct": {"10y": _pct_entry(57.5), "5y": _pct_entry(73.5, 1220, 1220),
-                   "all": _pct_entry(48.9, 2900, None)},
+        "pe_ttm_pct": {"10y": _pct_entry(81.8), "5y": _pct_entry(94.1, 1220),
+                       "all": _pct_entry(69.6, 2900)},
+        "pe_static_pct": {"10y": _pct_entry(75.9), "5y": _pct_entry(86.5, 1220),
+                          "all": _pct_entry(64.6, 2900)},
+        "pb_pct": {"10y": _pct_entry(57.5), "5y": _pct_entry(73.5, 1220),
+                   "all": _pct_entry(48.9, 2900)},
         "eps_ttm": 237.15,
         "bps": 3177.64,
         "pe_pb_divergence": 24.3,
@@ -194,38 +194,23 @@ class TestExpectedReturnPanel(unittest.TestCase):
 
 class TestFmtPctWindow(unittest.TestCase):
 
-    def test_sufficient_samples_no_warning(self):
-        """n >= expected*0.8 → 正常 '72.3% (n=2440/2440)'"""
-        entry = {"pct": 72.3, "n": 2440, "expected": 2440}
+    def test_normal(self):
+        """正常: '72.3% (n=2427)'，不显示 /expected"""
+        entry = {"pct": 72.3, "n": 2427}
         out = _fmt_pct_window(entry)
-        self.assertIn("72.3%", out)
-        self.assertIn("n=2440/2440", out)
+        self.assertEqual(out, "72.3% (n=2427)")
         self.assertNotIn("⚠", out)
-
-    def test_low_coverage_with_warning(self):
-        """n < expected*0.8 → '72.3% ⚠ (n=150/2440)'"""
-        entry = {"pct": 72.3, "n": 150, "expected": 2440}
-        out = _fmt_pct_window(entry)
-        self.assertIn("72.3%", out)
-        self.assertIn("⚠", out)
-        self.assertIn("n=150/2440", out)
+        self.assertNotIn("/", out)
 
     def test_absolute_low_samples_returns_na(self):
-        """pct=None → 'N/A ⚠ (n=50/2440)'"""
-        entry = {"pct": None, "n": 50, "expected": 2440}
+        """pct=None（n < MIN_SAMPLES）→ 'N/A ⚠ (n=50)'"""
+        entry = {"pct": None, "n": 50}
         out = _fmt_pct_window(entry)
-        self.assertIn("N/A", out)
-        self.assertIn("⚠", out)
-        self.assertIn("n=50/2440", out)
+        self.assertEqual(out, "N/A ⚠ (n=50)")
 
-    def test_all_window_no_expected_suffix(self):
-        """all 窗口 expected=None → '65.0% (n=2900)'，不带 /N"""
-        entry = {"pct": 65.0, "n": 2900, "expected": None}
-        out = _fmt_pct_window(entry)
-        self.assertIn("65.0%", out)
-        self.assertIn("n=2900", out)
-        self.assertNotIn("/2900", out)
-        self.assertNotIn("⚠", out)
+    def test_none_entry(self):
+        """entry=None → 'N/A'"""
+        self.assertEqual(_fmt_pct_window(None), "N/A")
 
     def test_none_entry_returns_na(self):
         """整个 entry 是 None → 'N/A'"""
