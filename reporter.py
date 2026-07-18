@@ -133,9 +133,9 @@ def generate_report(
 
     div = metrics.get("pe_pb_divergence", 0)
     if div > 10:
-        lines.append(f"PE-PB 背离：+{div:.1f}pp（盈利阶段性低位）")
+        lines.append(f"PE-PB 背离：+{div:.1f}pp（盈利阶段性低位，净资产相对坚挺）")
     elif div < -10:
-        lines.append(f"PE-PB 背离：{div:.1f}pp（净资产膨胀）")
+        lines.append(f"PE-PB 背离：{div:.1f}pp（盈利强劲或净资产收缩）")
     else:
         lines.append(f"PE-PB 背离：{div:+.1f}pp（基本一致）")
     lines.append("")

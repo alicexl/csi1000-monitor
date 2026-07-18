@@ -76,7 +76,12 @@ def compute_pct_for_windows(
 
 
 def pe_pb_divergence(pe_pct: float, pb_pct: float) -> float:
-    """PE 分位 - PB 分位。正值=盈利低位，负值=净资产膨胀。"""
+    """PE 分位 - PB 分位。
+
+    正值 = PE 相对 PB 更贵（E 弱 + B 强）→ 盈利阶段性低位；
+    负值 = PB 相对 PE 更贵（E 强 + B 弱）→ 盈利强劲或净资产收缩。
+    PB 高 ≠ 净资产高；PB 高 = 单位净资产卖得贵 = B 相对 P 偏低。
+    """
     return pe_pct - pb_pct
 
 
