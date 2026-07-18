@@ -31,6 +31,30 @@ def format_signals_section(signals: list[Signal], state: str) -> str:
     return "\n".join(lines)
 
 
+def _fmt_pct_window(entry) -> str:
+    """格式化单个窗口的分位文本。entry = {pct, n, expected}。
+
+    - 样本足够（n >= expected*0.8 或 all 窗口 n >= MIN_SAMPLES）:  "72.3% (n=2440)"
+    - 样本偏少但仍算出分位:  "72.3% ⚠ (n=150/2440)"
+    - 样本绝对不足（pct=None）:  "N/A ⚠ (n=50/2440)"
+    - 全历史不显示 /expected:  "65.0% (n=2900)"
+    """
+    if entry is None:
+        return "N/A"
+    pct = entry.get("pct")
+    n = entry.get("n", 0)
+    expected = entry.get("expected")
+    if expected:
+        n_tag = f"n={n}/{expected}"
+    else:
+        n_tag = f"n={n}"
+    if pct is None:
+        return f"N/A ⚠ ({n_tag})"
+    if expected and n < expected * 0.8:
+        return f"{pct:.1f}% ⚠ ({n_tag})"
+    return f"{pct:.1f}% ({n_tag})"
+
+
 def _valuation_table(metrics: dict) -> str:
     pe_pct = metrics["pe_ttm_pct"]
     pe_s_pct = metrics["pe_static_pct"]
@@ -38,12 +62,12 @@ def _valuation_table(metrics: dict) -> str:
     return (
         "| 指标 | 当前 | 近10年分位 | 近5年 | 全历史 |\n"
         "|---|---|---|---|---|\n"
-        f"| PE_TTM | {metrics['pe_ttm']:.1f} | **{pe_pct.get('10y', 0):.1f}%** | "
-        f"{pe_pct.get('5y', 0):.1f}% | {pe_pct.get('all', 0):.1f}% |\n"
-        f"| PE 静态 | {metrics['pe_static']:.1f} | {pe_s_pct.get('10y', 0):.1f}% | "
-        f"{pe_s_pct.get('5y', 0):.1f}% | {pe_s_pct.get('all', 0):.1f}% |\n"
-        f"| PB | {metrics['pb']:.2f} | {pb_pct.get('10y', 0):.1f}% | "
-        f"{pb_pct.get('5y', 0):.1f}% | {pb_pct.get('all', 0):.1f}% |"
+        f"| PE_TTM | {metrics['pe_ttm']:.1f} | **{_fmt_pct_window(pe_pct.get('10y'))}** | "
+        f"{_fmt_pct_window(pe_pct.get('5y'))} | {_fmt_pct_window(pe_pct.get('all'))} |\n"
+        f"| PE 静态 | {metrics['pe_static']:.1f} | {_fmt_pct_window(pe_s_pct.get('10y'))} | "
+        f"{_fmt_pct_window(pe_s_pct.get('5y'))} | {_fmt_pct_window(pe_s_pct.get('all'))} |\n"
+        f"| PB | {metrics['pb']:.2f} | {_fmt_pct_window(pb_pct.get('10y'))} | "
+        f"{_fmt_pct_window(pb_pct.get('5y'))} | {_fmt_pct_window(pb_pct.get('all'))} |"
     )
 
 
@@ -164,7 +188,7 @@ def render_status_line(
     state_cn = "空仓" if state == "empty" else "持仓"
     close = metrics.get("close", 0)
     pe = metrics.get("pe_ttm", 0)
-    pe_pct = metrics.get("pe_ttm_pct", {}).get("10y", 0)
+    pe_pct = metrics.get("pe_ttm_pct", {}).get("10y", {}).get("pct") or 0
     emoji = SIGNAL_EMOJI.get(signal_type, "")
 
     return (f"{report_date} | {state_cn} | {close:.0f}点 | "

@@ -18,6 +18,9 @@ from reporter import generate_report, render_status_line
 
 # ─── 多区间分位算法（原 valuation.py）─────────────────────────
 WINDOW_DAYS = {"10y": 3652, "5y": 1826, "all": 99999}
+# 各窗口预期样本数（A 股每年约 244 交易日）；all 不设预期（全历史即全样本）
+EXPECTED_SAMPLES = {"10y": 2440, "5y": 1220, "all": None}
+MIN_SAMPLES = 100  # 绝对阈值（约 5 个月交易日），低于此分位直接 N/A
 
 
 def percentile(series: list[float], current: float) -> float:
@@ -29,8 +32,10 @@ def percentile(series: list[float], current: float) -> float:
 
 
 def _filter_by_window(history: list[dict], field: str, days: int) -> list[float]:
-    """按天数窗口过滤历史，提取数值字段。跳过 None/缺字段。"""
-    cutoff = datetime.now() - timedelta(days=days)
+    """按天数窗口过滤历史，提取数值字段。cutoff 用今日午夜，避免 now 的时刻比较 bug。"""
+    today_midnight = datetime.now().replace(
+        hour=0, minute=0, second=0, microsecond=0)
+    cutoff = today_midnight - timedelta(days=days)
     values = []
     for row in history:
         d = row.get("date")
@@ -48,17 +53,25 @@ def _filter_by_window(history: list[dict], field: str, days: int) -> list[float]
 
 def compute_pct_for_windows(
     history: list[dict], current: dict, field: str, windows: list[str],
-) -> dict[str, float]:
-    """算多区间分位。返回 {window_name: pct}。"""
+) -> dict[str, dict]:
+    """算多区间分位。返回 {window_name: {pct, n, expected}}。
+
+    - pct: 分位值；样本不足（n < MIN_SAMPLES）时为 None
+    - n: 实际样本数
+    - expected: 预期样本数（A 股 244/年）；all 窗口为 None
+    """
     current_val = current.get(field)
     if current_val is None:
-        return {w: 0.0 for w in windows}
+        return {w: {"pct": None, "n": 0, "expected": EXPECTED_SAMPLES.get(w)}
+                for w in windows}
     current_val = float(current_val)
     result = {}
     for w in windows:
         days = WINDOW_DAYS.get(w, 99999)
         series = _filter_by_window(history, field, days)
-        result[w] = percentile(series, current_val)
+        n = len(series)
+        pct = percentile(series, current_val) if n >= MIN_SAMPLES else None
+        result[w] = {"pct": pct, "n": n, "expected": EXPECTED_SAMPLES.get(w)}
     return result
 
 
@@ -123,7 +136,8 @@ def _extract_signal_metrics(metrics: dict, switch_days: int = 7) -> dict:
     else:
         active = cur_month
     return {
-        "pe_ttm_pct_10y": metrics["pe_ttm_pct"].get("10y", 100),
+        "pe_ttm_pct_10y": metrics["pe_ttm_pct"].get("10y", {}).get("pct")
+                          or 100,  # 样本不足（None）→ 100，保守 wait 不入场
         "current_month_discount": active["annualized_discount"] if active else 0,
         "current_month_days": active["days_to_expire"] if active else 999,
     }
@@ -222,7 +236,8 @@ def _build_metrics(conn) -> dict:
         "eps_ttm": close / pe_ttm if pe_ttm else 0,
         "bps": close / pb if pb else 0,
         "pe_pb_divergence": pe_pb_divergence(
-            pe_ttm_pct.get("10y", 0), pb_pct.get("10y", 0)),
+            pe_ttm_pct.get("10y", {}).get("pct") or 0,
+            pb_pct.get("10y", {}).get("pct") or 0),
         "contracts": contracts,
         "main_continuous_discount_pct": main_pct,
     }

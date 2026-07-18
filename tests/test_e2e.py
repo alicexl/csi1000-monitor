@@ -98,7 +98,8 @@ class TestE2EReport(unittest.TestCase):
             "eps_ttm": latest["close"] / latest["pe_ttm"],
             "bps": latest["close"] / latest["pb"],
             "pe_pb_divergence": pe_pb_divergence(
-                pe_ttm_pct.get("10y", 0), pb_pct.get("10y", 0)),
+                pe_ttm_pct.get("10y", {}).get("pct") or 0,
+                pb_pct.get("10y", {}).get("pct") or 0),
             "contracts": contracts,
             "main_continuous_discount_pct": main_pct,
         }
@@ -109,7 +110,7 @@ class TestE2EReport(unittest.TestCase):
         metrics = self._build_metrics()
         cur_month = next(c for c in metrics["contracts"] if c["contract_type"] == "当月")
         sigs = evaluate("empty", {
-            "pe_ttm_pct_10y": metrics["pe_ttm_pct"]["10y"],
+            "pe_ttm_pct_10y": metrics["pe_ttm_pct"]["10y"].get("pct") or 100,
             "current_month_discount": cur_month["annualized_discount"],
             "current_month_days": cur_month["days_to_expire"],
         }, t)
@@ -130,7 +131,7 @@ class TestE2EReport(unittest.TestCase):
         metrics = self._build_metrics()
         cur_month = next(c for c in metrics["contracts"] if c["contract_type"] == "当月")
         sigs = evaluate("holding", {
-            "pe_ttm_pct_10y": metrics["pe_ttm_pct"]["10y"],
+            "pe_ttm_pct_10y": metrics["pe_ttm_pct"]["10y"].get("pct") or 100,
             "current_month_discount": cur_month["annualized_discount"],
             "current_month_days": cur_month["days_to_expire"],
         }, t)
