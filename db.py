@@ -72,55 +72,8 @@ def init_db(db_path: Path) -> sqlite3.Connection:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA busy_timeout=5000")
         conn.executescript(SCHEMA)
-        _migrate_signals_unique(conn)
-        _migrate_main_continuous_basis(conn)
         conn.commit()
     return conn
-
-
-def _migrate_main_continuous_basis(conn: sqlite3.Connection) -> None:
-    """一次性修复老 DB 的主力连续 IM0 基差。
-
-    旧 fetch_main_continuous 用'今日现货'算所有历史行的 basis，导致历史 |basis|
-    偏大、今日 |basis| 几乎永远最小 → 主力贴水分位总是 ~5%。修复：用每行
-    date 对应的现货收盘重算。user_version=1 标记已迁移，避免重复执行。
-    """
-    version = conn.execute("PRAGMA user_version").fetchone()[0]
-    if version >= 1:
-        return
-    conn.execute(
-        "UPDATE daily_contracts SET basis = close - ("
-        "  SELECT close FROM daily_valuation WHERE date = daily_contracts.date"
-        ") WHERE symbol = 'IM0' AND basis IS NOT NULL "
-        "  AND EXISTS (SELECT 1 FROM daily_valuation WHERE date = daily_contracts.date)"
-    )
-    conn.execute("PRAGMA user_version = 1")
-
-
-def _migrate_signals_unique(conn: sqlite3.Connection) -> None:
-    """老 DB signals 表无 UNIQUE(date, signal_type, condition) 约束 →
-    清理重复行（按分组保留最小 id）+ 建唯一索引。新 DB 已在 schema 里声明 UNIQUE，跳过。
-    """
-    has_unique = conn.execute(
-        "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='sqlite_autoindex_signals'"
-    ).fetchone()[0]
-    # 新 schema 里 UNIQUE 自动生成 sqlite_autoindex_signals；老 schema 没有
-    has_unique_explicit = conn.execute(
-        "SELECT sql FROM sqlite_master WHERE type='table' AND name='signals'"
-    ).fetchone()
-    sql_def = has_unique_explicit[0] if has_unique_explicit else ""
-    if "UNIQUE(date, signal_type, condition)" in sql_def:
-        return  # 新 schema
-    # 老 schema：清理重复 + 加唯一索引
-    conn.execute(
-        "DELETE FROM signals WHERE id NOT IN ("
-        "  SELECT MIN(id) FROM signals GROUP BY date, signal_type, condition"
-        ")"
-    )
-    conn.execute(
-        "CREATE UNIQUE INDEX IF NOT EXISTS idx_signals_dedup "
-        "ON signals(date, signal_type, condition)"
-    )
 
 
 def upsert_valuation(conn: sqlite3.Connection, row: dict[str, Any]) -> str:
