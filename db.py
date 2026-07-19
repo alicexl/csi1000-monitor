@@ -74,25 +74,8 @@ def init_db(db_path: Path) -> sqlite3.Connection:
         conn.executescript(SCHEMA)
         _migrate_signals_unique(conn)
         _migrate_main_continuous_basis(conn)
-        _migrate_drop_unused_valuation_columns(conn)
         conn.commit()
     return conn
-
-
-def _migrate_drop_unused_valuation_columns(conn: sqlite3.Connection) -> None:
-    """一次性删除 daily_valuation 的 5 个冗余列（pe_ttm_eq / pe_static_med /
-    pe_ttm_med / pb_med / pb_w）——akshare 原生返回但项目从不读。
-
-    user_version=2 幂等标记；DROP COLUMN 需 SQLite ≥ 3.35（3.39 已满足）。
-    """
-    version = conn.execute("PRAGMA user_version").fetchone()[0]
-    if version >= 2:
-        return
-    cols = {r[1] for r in conn.execute("PRAGMA table_info(daily_valuation)")}
-    for drop in ("pe_ttm_eq", "pe_static_med", "pe_ttm_med", "pb_med", "pb_w"):
-        if drop in cols:
-            conn.execute(f"ALTER TABLE daily_valuation DROP COLUMN {drop}")
-    conn.execute("PRAGMA user_version = 2")
 
 
 def _migrate_main_continuous_basis(conn: sqlite3.Connection) -> None:
