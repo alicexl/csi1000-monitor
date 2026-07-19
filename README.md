@@ -62,6 +62,14 @@ pip install akshare pandas
 
 Python ≥ 3.9。Windows / macOS / Linux 均可。
 
+**Claude Code 用户**（可选）：直接 clone 到 skills 目录，即可在所有会话里全局触发：
+
+```bash
+git clone https://github.com/alicexl/csi1000-monitor.git ~/.claude/skills/csi1000-monitor
+```
+
+触发词：`csi1000` / `中证1000` / `贴水监控` / `贴水策略` / `IM 期货` / `MO 期权`。说"跑下贴水监控"/"看看 1000 估值"会自动执行 `python monitor.py run` 并解读报告。
+
 ---
 
 ## 四、快速开始
@@ -389,19 +397,6 @@ python -m pytest tests/ -q
 |---|---|---|
 | 空仓等待 | 每周五盘后 | 估值 <50% + 贴水够厚 |
 | 持仓 | 每月 / 交割日前一周 | 估值 >85% + 合约切换 |
-
----
-
-## 十四、Claude Code Skill（可选）
-
-本项目根目录的 `SKILL.md` 是 Claude Code skill 定义。在 `~/.claude/skills/csi1000-monitor/` 建 directory junction 指向项目根：
-
-```bash
-# Windows (需要管理员权限的 cmd)
-mklink /J "%USERPROFILE%\.claude\skills\csi1000-monitor" "D:\workspace\csi1000-monitor"
-```
-
-安装后在 Claude Code 中说"跑下贴水监控"即可自动执行，触发词：`csi1000` / `贴水监控` / `中证1000` / `IM 期货` / `MO 期权`。
 
 ---
 
