@@ -181,12 +181,7 @@ def build_valuation_row(row: dict) -> dict:
         "close": float(row["close"]),
         "pe_static": float(row.get("pe_static", 0)),
         "pe_ttm": float(row.get("pe_ttm", 0)),
-        "pe_ttm_eq": float(row.get("pe_ttm_eq", 0)),
-        "pe_static_med": float(row.get("pe_static_med", 0)),
-        "pe_ttm_med": float(row.get("pe_ttm_med", 0)),
         "pb": float(row.get("pb", 0)),
-        "pb_med": float(row.get("pb_med", 0)),
-        "pb_w": float(row.get("pb_w", 0)),
         "fetched_at": datetime.now().isoformat(timespec="seconds"),
     }
 
@@ -200,16 +195,14 @@ def fetch_valuation() -> list[dict]:
 
     pe_df = pe_raw.rename(columns={
         "日期": "date", "指数": "close",
-        "等权静态市盈率": "pe_static_eq", "静态市盈率": "pe_static",
-        "静态市盈率中位数": "pe_static_med", "等权滚动市盈率": "pe_ttm_eq",
-        "滚动市盈率": "pe_ttm", "滚动市盈率中位数": "pe_ttm_med",
+        "静态市盈率": "pe_static",
+        "滚动市盈率": "pe_ttm",
     })
     pb_df = pb_raw.rename(columns={
         "日期": "date", "指数": "close", "市净率": "pb",
-        "等权市净率": "pb_w", "市净率中位数": "pb_med",
     })
 
-    merged = pe_df.merge(pb_df[["date", "pb", "pb_med", "pb_w"]], on="date", how="inner")
+    merged = pe_df.merge(pb_df[["date", "pb"]], on="date", how="inner")
     merged = merged.sort_values("date").reset_index(drop=True)
 
     rows = []

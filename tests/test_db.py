@@ -85,9 +85,8 @@ class TestValuationCRUD(unittest.TestCase):
     def test_upsert_and_query_latest(self):
         row = {
             "date": "2026-07-10", "close": 8198.31,
-            "pe_static": 35.77, "pe_ttm": 34.57, "pe_ttm_eq": 61.05,
-            "pe_static_med": 41.55, "pe_ttm_med": 40.91,
-            "pb": 2.58, "pb_med": 2.65, "pb_w": 4.77,
+            "pe_static": 35.77, "pe_ttm": 34.57,
+            "pb": 2.58,
             "fetched_at": "2026-07-12T10:00:00",
         }
         result = upsert_valuation(self.conn, row)
@@ -102,9 +101,8 @@ class TestValuationCRUD(unittest.TestCase):
         """重复插入同一天 → updated，且数值被新值覆盖"""
         row = {
             "date": "2026-07-10", "close": 8198.31,
-            "pe_static": 35.77, "pe_ttm": 34.57, "pe_ttm_eq": 61.05,
-            "pe_static_med": 41.55, "pe_ttm_med": 40.91,
-            "pb": 2.58, "pb_med": 2.65, "pb_w": 4.77,
+            "pe_static": 35.77, "pe_ttm": 34.57,
+            "pb": 2.58,
             "fetched_at": "2026-07-12T10:00:00",
         }
         upsert_valuation(self.conn, row)
@@ -130,9 +128,8 @@ class TestValuationCRUD(unittest.TestCase):
         for d, close in [("2026-07-08", 8117.86), ("2026-07-09", 8300.08), ("2026-07-10", 8198.31)]:
             upsert_valuation(self.conn, {
                 "date": d, "close": close,
-                "pe_static": 35.0, "pe_ttm": 34.0, "pe_ttm_eq": 60.0,
-                "pe_static_med": 41.0, "pe_ttm_med": 40.0,
-                "pb": 2.5, "pb_med": 2.6, "pb_w": 4.7,
+                "pe_static": 35.0, "pe_ttm": 34.0,
+                "pb": 2.5,
                 "fetched_at": "2026-07-12T10:00:00",
             })
         hist = query_valuation_history(self.conn, days=10)
@@ -230,8 +227,8 @@ class TestMainContinuousBasisMigration(unittest.TestCase):
         for d, c in [("2026-07-08", 8000.0), ("2026-07-10", 8170.0)]:
             conn.execute(
                 "INSERT INTO daily_valuation (date, close, pe_static, pe_ttm, "
-                "pe_ttm_eq, pe_static_med, pe_ttm_med, pb, pb_med, pb_w, fetched_at) "
-                "VALUES (?, ?, 0, 0, 0, 0, 0, 0, 0, 0, 't')",
+                "pb, fetched_at) "
+                "VALUES (?, ?, 0, 0, 0, 't')",
                 (d, c),
             )
         # buggy IM0：旧 fetch 用 today_spot=8198 算所有历史行
@@ -274,8 +271,8 @@ class TestMainContinuousBasisMigration(unittest.TestCase):
         conn.executescript(SCHEMA)
         conn.execute(
             "INSERT INTO daily_valuation (date, close, pe_static, pe_ttm, "
-            "pe_ttm_eq, pe_static_med, pe_ttm_med, pb, pb_med, pb_w, fetched_at) "
-            "VALUES ('2026-07-10', 8170.0, 0, 0, 0, 0, 0, 0, 0, 0, 't')"
+            "pb, fetched_at) "
+            "VALUES ('2026-07-10', 8170.0, 0, 0, 0, 't')"
         )
         # 2026-07-08 没有估值行
         for d, close in [("2026-07-08", 7950), ("2026-07-10", 8150)]:
@@ -295,6 +292,72 @@ class TestMainContinuousBasisMigration(unittest.TestCase):
         self.assertAlmostEqual(by_date["2026-07-10"], -20.0)
         # 无估值 → 保持原 buggy 值（-248）
         self.assertAlmostEqual(by_date["2026-07-08"], -248.0)
+
+
+class TestDropUnusedValuationColumns(unittest.TestCase):
+    """老 DB 有 pe_ttm_eq/pe_static_med/pe_ttm_med/pb_med/pb_w 5 个冗余列，
+    迁移 DROP 掉；user_version=2 幂等。"""
+
+    def setUp(self):
+        self._fd, self.path = tempfile.mkstemp(suffix=".db")
+        os.close(self._fd)
+
+    def tearDown(self):
+        if hasattr(self, "conn"):
+            self.conn.close()
+        os.unlink(self.path)
+
+    def _seed_old_schema(self):
+        """模拟老 schema：手动 CREATE 11 列的 daily_valuation。"""
+        import sqlite3
+        conn = sqlite3.connect(self.path)
+        conn.execute(
+            "CREATE TABLE daily_valuation ("
+            "date TEXT PRIMARY KEY, close REAL NOT NULL, "
+            "pe_static REAL, pe_ttm REAL, pe_ttm_eq REAL, "
+            "pe_static_med REAL, pe_ttm_med REAL, "
+            "pb REAL, pb_med REAL, pb_w REAL, fetched_at TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO daily_valuation (date, close, pe_static, pe_ttm, "
+            "pe_ttm_eq, pe_static_med, pe_ttm_med, pb, pb_med, pb_w, fetched_at) "
+            "VALUES ('2026-07-10', 8198, 35.77, 34.57, 61, 41, 40, 2.58, 2.65, 4.77, 't')"
+        )
+        conn.execute("PRAGMA user_version = 1")  # 跳过 basis 迁移
+        conn.commit()
+        conn.close()
+
+    def test_drops_five_columns(self):
+        self._seed_old_schema()
+        self.conn = init_db(Path(self.path))
+        cols = [r[1] for r in self.conn.execute(
+            "PRAGMA table_info(daily_valuation)")]
+        for dropped in ("pe_ttm_eq", "pe_static_med", "pe_ttm_med",
+                        "pb_med", "pb_w"):
+            self.assertNotIn(dropped, cols)
+        for kept in ("date", "close", "pe_static", "pe_ttm", "pb", "fetched_at"):
+            self.assertIn(kept, cols)
+
+    def test_data_preserved_after_drop(self):
+        """5 列删掉，但 close/pe_ttm/pb 数据保留"""
+        self._seed_old_schema()
+        self.conn = init_db(Path(self.path))
+        row = self.conn.execute(
+            "SELECT close, pe_ttm, pb FROM daily_valuation WHERE date='2026-07-10'"
+        ).fetchone()
+        self.assertAlmostEqual(row[0], 8198)
+        self.assertAlmostEqual(row[1], 34.57)
+        self.assertAlmostEqual(row[2], 2.58)
+
+    def test_idempotent(self):
+        self._seed_old_schema()
+        self.conn = init_db(Path(self.path))
+        self.conn.close()
+        # 第二次 init 不报错（user_version 已 = 2）
+        self.conn = init_db(Path(self.path))
+        cols = [r[1] for r in self.conn.execute(
+            "PRAGMA table_info(daily_valuation)")]
+        self.assertNotIn("pb_w", cols)
 
 
 class TestSignalCRUD(unittest.TestCase):

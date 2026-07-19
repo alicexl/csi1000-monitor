@@ -41,9 +41,8 @@ class TestBuildValuationRow(unittest.TestCase):
         """merged row（PE + PB 已 join）构造 valuation 记录"""
         row = build_valuation_row({
             "date": "2026-07-10", "close": 8198.31,
-            "pe_static": 35.77, "pe_ttm": 34.57, "pe_ttm_eq": 61.05,
-            "pe_static_med": 41.55, "pe_ttm_med": 40.91,
-            "pb": 2.58, "pb_med": 2.65, "pb_w": 4.77,
+            "pe_static": 35.77, "pe_ttm": 34.57,
+            "pb": 2.58,
         })
         self.assertEqual(row["date"], "2026-07-10")
         self.assertAlmostEqual(row["close"], 8198.31)

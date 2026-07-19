@@ -8,17 +8,12 @@ from typing import Any
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS daily_valuation (
-    date          TEXT PRIMARY KEY,
-    close         REAL NOT NULL,
-    pe_static     REAL,
-    pe_ttm        REAL,
-    pe_ttm_eq     REAL,
-    pe_static_med REAL,
-    pe_ttm_med    REAL,
-    pb            REAL,
-    pb_med        REAL,
-    pb_w          REAL,
-    fetched_at    TEXT NOT NULL
+    date        TEXT PRIMARY KEY,
+    close       REAL NOT NULL,
+    pe_static   REAL,
+    pe_ttm      REAL,
+    pb          REAL,
+    fetched_at  TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS daily_contracts (
@@ -79,8 +74,25 @@ def init_db(db_path: Path) -> sqlite3.Connection:
         conn.executescript(SCHEMA)
         _migrate_signals_unique(conn)
         _migrate_main_continuous_basis(conn)
+        _migrate_drop_unused_valuation_columns(conn)
         conn.commit()
     return conn
+
+
+def _migrate_drop_unused_valuation_columns(conn: sqlite3.Connection) -> None:
+    """一次性删除 daily_valuation 的 5 个冗余列（pe_ttm_eq / pe_static_med /
+    pe_ttm_med / pb_med / pb_w）——akshare 原生返回但项目从不读。
+
+    user_version=2 幂等标记；DROP COLUMN 需 SQLite ≥ 3.35（3.39 已满足）。
+    """
+    version = conn.execute("PRAGMA user_version").fetchone()[0]
+    if version >= 2:
+        return
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(daily_valuation)")}
+    for drop in ("pe_ttm_eq", "pe_static_med", "pe_ttm_med", "pb_med", "pb_w"):
+        if drop in cols:
+            conn.execute(f"ALTER TABLE daily_valuation DROP COLUMN {drop}")
+    conn.execute("PRAGMA user_version = 2")
 
 
 def _migrate_main_continuous_basis(conn: sqlite3.Connection) -> None:
@@ -139,20 +151,13 @@ def upsert_valuation(conn: sqlite3.Connection, row: dict[str, Any]) -> str:
     ).fetchone() is not None
     sql = """
     INSERT INTO daily_valuation
-        (date, close, pe_static, pe_ttm, pe_ttm_eq, pe_static_med,
-         pe_ttm_med, pb, pb_med, pb_w, fetched_at)
-    VALUES (:date, :close, :pe_static, :pe_ttm, :pe_ttm_eq, :pe_static_med,
-            :pe_ttm_med, :pb, :pb_med, :pb_w, :fetched_at)
+        (date, close, pe_static, pe_ttm, pb, fetched_at)
+    VALUES (:date, :close, :pe_static, :pe_ttm, :pb, :fetched_at)
     ON CONFLICT(date) DO UPDATE SET
         close=excluded.close,
         pe_static=excluded.pe_static,
         pe_ttm=excluded.pe_ttm,
-        pe_ttm_eq=excluded.pe_ttm_eq,
-        pe_static_med=excluded.pe_static_med,
-        pe_ttm_med=excluded.pe_ttm_med,
         pb=excluded.pb,
-        pb_med=excluded.pb_med,
-        pb_w=excluded.pb_w,
         fetched_at=excluded.fetched_at
     """
     conn.execute(sql, row)

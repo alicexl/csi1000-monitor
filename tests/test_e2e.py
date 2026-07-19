@@ -31,9 +31,8 @@ def seed_fixture_db(db_path):
     ]):
         upsert_valuation(conn, {
             "date": d, "close": close,
-            "pe_static": pe_s, "pe_ttm": pe_t, "pe_ttm_eq": 60.0 + i,
-            "pe_static_med": 40.0 + i, "pe_ttm_med": 39.0 + i,
-            "pb": pb_v, "pb_med": pb_v + 0.1, "pb_w": pb_v + 2.0,
+            "pe_static": pe_s, "pe_ttm": pe_t,
+            "pb": pb_v,
             "fetched_at": "2026-07-12T10:00:00",
         })
     # 当日合约
