@@ -2,19 +2,23 @@
 from __future__ import annotations
 import unittest
 
-from signals import Signal, Thresholds, evaluate
+from signals import Signal, Thresholds, evaluate, score_carry, carry_suggestion
 
 EMPTY = "empty"
 HOLDING = "holding"
 
 
-def make_metrics(pe_pct=50, discount=5, days=10, near_discount=None):
+def make_metrics(pe_pct=50, discount=5, days=10, near_discount=None,
+                 pb_pct=40, pbs_score=1.1):
     """构造 signals 输入。discount = 下月年化贴水；near_discount = 当月年化贴水。
     roll_yield = discount - near_discount（自动计算）。
-    默认 near_discount = 3（比下月小，即正常 backwardation，roll_yield = discount - 3 > 0）。"""
+    默认 near_discount = 3（比下月小，即正常 backwardation，roll_yield = discount - 3 > 0）。
+    pb_pct/pbs_score 默认满足入场（PB 40<50, PBS 1.1>1.05），保证旧测试不回归。"""
     near = near_discount if near_discount is not None else 3
     return {
         "pe_ttm_pct_10y": pe_pct,
+        "pb_pct_10y": pb_pct,
+        "pbs_score": pbs_score,
         "current_month_discount": near,
         "current_month_days": days,
         "next_month_discount": discount,
@@ -37,6 +41,28 @@ class TestEmptyState(unittest.TestCase):
         sigs = evaluate(EMPTY, make_metrics(pe_pct=50, discount=8), self.t)
         types = [s.type for s in sigs]
         self.assertNotIn("entry", types)
+
+    def test_entry_requires_pb_below_50(self):
+        """新条件：PB 分位 ≥50% 不入场（即使 PE/贴水/PBS 达标）"""
+        sigs = evaluate(EMPTY, make_metrics(
+            pe_pct=40, discount=8, pb_pct=55), self.t)
+        self.assertNotIn("entry", [s.type for s in sigs])
+
+    def test_entry_requires_pbs_above_trend(self):
+        """新条件：PBS_score ≤1.05 不入场（资产未低于趋势）"""
+        sigs = evaluate(EMPTY, make_metrics(
+            pe_pct=40, discount=8, pbs_score=1.0), self.t)
+        self.assertNotIn("entry", [s.type for s in sigs])
+        # PBS 1.1 >1.05 → 入场
+        sigs2 = evaluate(EMPTY, make_metrics(
+            pe_pct=40, discount=8, pbs_score=1.1), self.t)
+        self.assertIn("entry", [s.type for s in sigs2])
+
+    def test_entry_missing_pb_pbs_no_entry(self):
+        """PB/PBS 缺失（数据不足）→ 保守不入场"""
+        sigs = evaluate(EMPTY, make_metrics(
+            pe_pct=40, discount=8, pb_pct=None, pbs_score=None), self.t)
+        self.assertNotIn("entry", [s.type for s in sigs])
 
     def test_entry_boundary_strict_gt_discount(self):
         """贴水=0（严格 >0）不触发 entry"""
@@ -101,17 +127,22 @@ class TestEmptyState(unittest.TestCase):
                       next(s for s in sigs_lo if s.type == "wait").condition)
 
     def test_warn_entry_pe_in_zone_with_discount(self):
-        """warn_entry 接近入场分支 + roll_yield > 0"""
+        """warn_entry 接近入场分支 + roll_yield > 0 → 列出条件缺口"""
         sigs = evaluate(EMPTY, make_metrics(pe_pct=55, discount=8), self.t)
         we = next(s for s in sigs if s.type == "warn_entry")
-        self.assertIn("曲线健康", we.condition)
+        # PE 55% 未达 <50% → ✗PE；其余 ✓（PB40/PBS1.1/roll+5）
+        self.assertIn("3/4", we.condition)
+        self.assertIn("✗PE<50%", we.condition)
+        self.assertIn("✓roll_yield", we.condition)
 
     def test_warn_entry_pe_in_zone_curve_flat(self):
-        """warn_entry 接近入场分支 + 曲线扁平/倒挂"""
+        """warn_entry 接近入场分支 + 曲线扁平/倒挂（roll_yield≤0）"""
         sigs = evaluate(EMPTY, make_metrics(
             pe_pct=55, discount=3, near_discount=5), self.t)
         we = next(s for s in sigs if s.type == "warn_entry")
-        self.assertIn("曲线扁平", we.condition)
+        # PE 55 ✗ + roll_yield -2 ✗；PB/PBS ✓ → 2/4
+        self.assertIn("2/4", we.condition)
+        self.assertIn("✗roll_yield", we.condition)
 
     def test_entry_when_curve_healthy_even_if_near_premium(self):
         """PE够低 + roll_yield > 0（即使近月升水，只要远月更深贴水）→ entry。
@@ -315,6 +346,69 @@ class TestConflictFiltering(unittest.TestCase):
         sigs = evaluate(HOLDING, make_metrics(pe_pct=50, discount=8, days=20), self.t)
         types = [s.type for s in sigs]
         self.assertEqual(types, ["hold"])
+
+
+class TestCarryScore(unittest.TestCase):
+    """IM Carry Score 三因子评分 + 档位建议。"""
+
+    def setUp(self):
+        self.t = Thresholds()
+
+    def test_current_data_scores_60(self):
+        """当前数据（贴水9.7/PB38.9/PBS0.99）→ 30+15+15=60，可持有档"""
+        cs = score_carry(9.7, 38.9, 0.99, self.t)
+        self.assertEqual(cs.total, 60)
+        self.assertEqual(cs.discount_pts, 30)
+        self.assertEqual(cs.pb_pts, 15)
+        self.assertEqual(cs.pbs_pts, 15)
+        self.assertEqual(cs.band, "holdable")
+
+    def test_perfect_scores_100(self):
+        """贴水≥10 + PB<30 + PBS>1.05 → 40+25+25=90（excellent 需≥80）"""
+        cs = score_carry(12.0, 20.0, 1.20, self.t)
+        self.assertEqual(cs.total, 90)
+        self.assertEqual(cs.band, "excellent")
+
+    def test_discount_tiers(self):
+        """贴水分档：≥10→40, 5~10→30, <5→10"""
+        self.assertEqual(score_carry(10.0, 20, 1.1, self.t).discount_pts, 40)
+        self.assertEqual(score_carry(9.9, 20, 1.1, self.t).discount_pts, 30)
+        self.assertEqual(score_carry(5.0, 20, 1.1, self.t).discount_pts, 30)
+        self.assertEqual(score_carry(4.9, 20, 1.1, self.t).discount_pts, 10)
+
+    def test_pb_tiers(self):
+        """PB 分位分档：<30→25, 30~60→15, ≥60→5"""
+        self.assertEqual(score_carry(10, 29.9, 1.1, self.t).pb_pts, 25)
+        self.assertEqual(score_carry(10, 30.0, 1.1, self.t).pb_pts, 15)
+        self.assertEqual(score_carry(10, 59.9, 1.1, self.t).pb_pts, 15)
+        self.assertEqual(score_carry(10, 60.0, 1.1, self.t).pb_pts, 5)
+
+    def test_pbs_tiers(self):
+        """PBS_score 分档：>1.05→25, 0.85~1.05→15, <0.85→0"""
+        self.assertEqual(score_carry(10, 40, 1.06, self.t).pbs_pts, 25)
+        self.assertEqual(score_carry(10, 40, 1.05, self.t).pbs_pts, 15)
+        self.assertEqual(score_carry(10, 40, 0.85, self.t).pbs_pts, 15)
+        self.assertEqual(score_carry(10, 40, 0.84, self.t).pbs_pts, 0)
+
+    def test_band_thresholds(self):
+        """档位：≥80 excellent, 50~79 holdable, <50 wait"""
+        self.assertEqual(score_carry(12, 20, 1.2, self.t).band, "excellent")
+        # 40+15+15=70 → holdable
+        self.assertEqual(score_carry(12, 40, 0.99, self.t).band, "holdable")
+        # 10+5+0=15 → wait
+        self.assertEqual(score_carry(3, 65, 0.80, self.t).band, "wait")
+
+    def test_carry_suggestion_differs_by_state(self):
+        """同档不同持仓状态建议不同"""
+        # 可持有档
+        self.assertIn("继续吃贴水", carry_suggestion("holdable", "holding"))
+        self.assertIn("新增仓位等待", carry_suggestion("holdable", "empty"))
+        # 极佳档
+        self.assertIn("加仓", carry_suggestion("excellent", "holding"))
+        self.assertIn("入场", carry_suggestion("excellent", "empty"))
+        # 观望档
+        self.assertIn("减仓", carry_suggestion("wait", "holding"))
+        self.assertIn("不操作", carry_suggestion("wait", "empty"))
 
 
 if __name__ == "__main__":

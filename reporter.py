@@ -2,7 +2,7 @@
 from __future__ import annotations
 from typing import Any
 
-from signals import Signal, Position
+from signals import Signal, Position, carry_suggestion
 
 STATE_LABEL = {
     "empty": "🟡 空仓等待",
@@ -48,15 +48,12 @@ def _fmt_pct_window(entry) -> str:
 
 def _valuation_table(metrics: dict) -> str:
     pe_pct = metrics["pe_ttm_pct"]
-    pe_s_pct = metrics["pe_static_pct"]
     pb_pct = metrics["pb_pct"]
     return (
         "| 指标 | 当前 | 近10年分位 | 近5年 | 全历史 |\n"
         "|---|---|---|---|---|\n"
         f"| PE_TTM | {metrics['pe_ttm']:.1f} | **{_fmt_pct_window(pe_pct.get('10y'))}** | "
         f"{_fmt_pct_window(pe_pct.get('5y'))} | {_fmt_pct_window(pe_pct.get('all'))} |\n"
-        f"| PE 静态 | {metrics['pe_static']:.1f} | {_fmt_pct_window(pe_s_pct.get('10y'))} | "
-        f"{_fmt_pct_window(pe_s_pct.get('5y'))} | {_fmt_pct_window(pe_s_pct.get('all'))} |\n"
         f"| PB | {metrics['pb']:.2f} | {_fmt_pct_window(pb_pct.get('10y'))} | "
         f"{_fmt_pct_window(pb_pct.get('5y'))} | {_fmt_pct_window(pb_pct.get('all'))} |"
     )
@@ -75,6 +72,136 @@ def _contracts_table(metrics: dict) -> str:
         "|---|---|---|---|---|---|---|"
     )
     return header + "\n" + "\n".join(rows) if rows else header + "\n| 无数据 |"
+
+
+def _bottom_trend_panel(bt: dict) -> str:
+    """PBS 底部回归 panel。
+
+    PBS = close/pb ≈ 隐含净资产。对历史局部低点对数回归 ln(PBS)=a+b*t 拟合
+    "净资产底部抬升趋势线"。当前 PBS 距趋势线的指标是长期估值底视角。
+
+    pbs_score = 趋势线/当前：>1 资产折价(便宜)，=1 正常，<1 资产溢价(贵)。
+    """
+    r2 = bt["r2"]
+    annual = bt["annual_pct"]
+    trend = bt["trend_now"]
+    cur = bt["current_pbs"]
+    score = bt["pbs_score"]
+    n = bt["n"]
+    recent = bt.get("recent_low")
+
+    # 距底解读（基于 pbs_score：>1 便宜，<1 贵）
+    if score > 1.05:
+        score_tag = "资产折价，长期视角偏便宜"
+    elif score > 0.95:
+        score_tag = "贴近趋势线，长期视角接近底部"
+    elif score > 0.85:
+        score_tag = "资产微溢价，长期视角中性"
+    else:
+        score_tag = "资产溢价，长期视角偏贵"
+
+    recent_str = ""
+    if recent:
+        recent_str = f"\n| 最近低点 | {recent[0]}  PBS={recent[1]:.0f} |"
+
+    # 回归框架理论点位表：PBS 偏离比分位 × 趋势线 × PB
+    theory_str = ""
+    tp = bt.get("theory_points")
+    if tp:
+        theory_str = (
+            "\n\n**回归框架理论点位**（PBS 偏离比分位 × 趋势线 × 当前PB）：\n"
+            "\n"
+            "| PBS偏离比 | 理论点位 | 距趋势线 | 情景 |\n"
+            "|---|---|---|---|\n"
+        )
+        for r in tp:
+            drop = r["drop_pct"]
+            drop_str = f"{drop:+.0f}%" if abs(drop) > 0.1 else "—"
+            theory_str += (
+                f"| {r['ratio']:.2f} | {r['price']:.0f} | "
+                f"{drop_str} | {r['tag']} |\n"
+            )
+        theory_str = theory_str.rstrip()  # 去尾换行
+
+    return (
+        f"趋势线：ln(PBS) = a + b×t   R²={r2:.2f}   "
+        f"底部抬升率 {annual:+.1f}%   基于 {n} 个历史低点（±{bt['window']} 日窗口）\n"
+        f"\n"
+        f"| 项目 | 值 |\n"
+        f"|---|---|\n"
+        f"| 当前 PBS | {cur:.0f}（close/pb）|\n"
+        f"| 底部趋势线 PBS_fair | {trend:.0f} |\n"
+        f"| PBS_score（fair/now）| {score:.2f} — {score_tag} |{recent_str}"
+        f"{theory_str}"
+    )
+
+
+def _pb_compression_panel(rows: list) -> str:
+    """PB 压缩空间 panel。
+
+    固定资产 B（=当前 PBS=close/pb），看不同 PB 分位情景对应的点位与跌幅。
+    回答交易者核心问题："资产已便宜，但估值还有多少杀跌空间"。
+    与 PBS 底部回归互补：PBS 看资产便宜不便宜，本面板看估值下行风险。
+    """
+    lines = [
+        "| PB | 对应点位 | 跌幅 | 情景 |",
+        "|---|---|---|---|",
+    ]
+    for r in rows:
+        pb = r["pb"]
+        price = r["price"]
+        drop = r["drop_pct"]
+        tag = r.get("tag", "")
+        drop_str = f"{drop:+.0f}%" if drop != 0 else "—"
+        lines.append(f"| {pb:.2f} | {price:.0f} | {drop_str} | {tag} |")
+    return "\n".join(lines)
+
+
+def _carry_score_panel(cs: dict, state: str) -> str:
+    """IM Carry Score panel（滚贴水持有评分，满分 100）。
+
+    三因子：下季贴水年化(40) + PB 10y 分位(25) + PBS_score(25)。
+    滚贴水≠价值投资：最怕高估值+低贴水+波动上升。Carry Score 量化"收益(贴水)+
+    安全(PB/PBS)"，区分极佳开仓/可持有观望/观望，并按持仓状态给具体建议。
+    """
+    total = cs["total"]
+    band = cs["band"]
+    band_label = {"excellent": "极佳", "holdable": "可持有", "wait": "观望"}[band]
+    suggestion = carry_suggestion(band, state)
+
+    # 各因子档位解读
+    def _roll_tag(v, pts):
+        if pts == 40:
+            return f"{v:.1f}% ≥10%（极佳收益）"
+        if pts == 30:
+            return f"{v:.1f}% 5~10%（良好）"
+        return f"{v:.1f}% <5%（收益不足）"
+    def _pb_tag(v, pts):
+        if pts == 25:
+            return f"{v:.1f}% <30%（资产便宜）"
+        if pts == 15:
+            return f"{v:.1f}% 30~60%（中性）"
+        return f"{v:.1f}% ≥60%（偏贵）"
+    def _pbs_tag(v, pts):
+        if pts == 25:
+            return f"{v:.2f} >1.05（低于趋势，便宜）"
+        if pts == 15:
+            return f"{v:.2f} 附近趋势"
+        return f"{v:.2f} <0.85（明显高于趋势）"
+
+    lines = [
+        f"**总分 {total}/100 — {band_label}**   {suggestion}",
+        "",
+        "| 因子 | 得分 | 当前值 | 档位 |",
+        "|---|---|---|---|",
+        f"| 下季贴水年化 | {cs['discount_pts']}/40 | "
+        f"{cs['discount_value']:.1f}% | {_roll_tag(cs['discount_value'], cs['discount_pts'])} |",
+        f"| PB 10y 分位 | {cs['pb_pts']}/25 | "
+        f"{cs['pb_pct']:.1f}% | {_pb_tag(cs['pb_pct'], cs['pb_pts'])} |",
+        f"| PBS_score | {cs['pbs_pts']}/25 | "
+        f"{cs['pbs_score']:.2f} | {_pbs_tag(cs['pbs_score'], cs['pbs_pts'])} |",
+    ]
+    return "\n".join(lines)
 
 
 def _expected_return_panel(er: dict) -> str:
@@ -154,12 +281,41 @@ def generate_report(
 
     div = metrics.get("pe_pb_divergence", 0)
     if div > 10:
-        lines.append(f"PE-PB 背离：+{div:.1f}pp（盈利阶段性低位，净资产相对坚挺）")
+        lines.append(
+            f"PE-PB 背离：+{div:.1f}pp — PE 分位显著高于 PB：市场对盈利恢复已有定价，"
+            f"但资产估值仍处中低区间"
+        )
+        lines.append(
+            "> 若盈利无法兑现恢复，PE 高分位可能转为估值压力"
+        )
     elif div < -10:
-        lines.append(f"PE-PB 背离：{div:.1f}pp（盈利强劲或净资产收缩）")
+        lines.append(
+            f"PE-PB 背离：{div:.1f}pp — PB 分位显著高于 PE：资产定价偏贵而盈利预期偏弱，"
+            f"或盈利强劲拉低 PE"
+        )
     else:
         lines.append(f"PE-PB 背离：{div:+.1f}pp（基本一致）")
     lines.append("")
+
+    bt = metrics.get("bottom_trend")
+    if bt:
+        lines.append("## 底部点位回归（PBS = close/pb，2014-至今对数趋势）")
+        lines.append(_bottom_trend_panel(bt))
+        lines.append("")
+
+        # PB 压缩空间与底部回归同源（都基于 close/pb），紧跟其后展示
+        pb_rows = bt.get("pb_compression")
+        if pb_rows:
+            lines.append("## PB 分位情景点位")
+            lines.append(_pb_compression_panel(pb_rows))
+            lines.append("")
+
+    # IM Carry Score（滚贴水持有评分）— 需要持仓状态给建议
+    cs = metrics.get("carry_score")
+    if cs:
+        lines.append("## IM Carry Score（滚贴水持有评分）")
+        lines.append(_carry_score_panel(cs, state))
+        lines.append("")
 
     er = metrics.get("expected_return")
     if er:
@@ -189,6 +345,10 @@ def generate_report(
         lines.append("## 操作建议")
         for s in top_sigs:
             lines.append(f"- {s.suggestion}")
+        # Carry Score 档位建议（区分已持仓/空仓，补信号系统没有的持仓视角）
+        cs = metrics.get("carry_score")
+        if cs:
+            lines.append(f"- [Carry {cs['total']}/100] {carry_suggestion(cs['band'], state)}")
         lines.append("")
 
     # 持仓盈亏（holding 状态）

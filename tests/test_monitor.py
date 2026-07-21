@@ -10,6 +10,7 @@ from unittest.mock import patch
 from monitor import (
     _extract_signal_metrics, _target_trade_date, _load_position,
     cmd_open, cmd_close, _compute_expected_return, _window_median,
+    _compute_carry_score, _next_quarter_discount,
 )
 from db import init_db, load_position
 
@@ -73,6 +74,69 @@ class TestExtractSignalMetrics(unittest.TestCase):
         self.assertAlmostEqual(out["next_month_discount"], 0)
         self.assertAlmostEqual(out["roll_yield"], 0)
         self.assertEqual(out["current_month_days"], 999)
+
+    def test_extracts_pb_and_pbs_for_entry(self):
+        """_extract_signal_metrics 抽出 pb_pct_10y + pbs_score 供新 entry 判断"""
+        self.metrics["contracts"] = [_contract("当月", 5.0, 20),
+                                     _contract("下月", 7.0, 50)]
+        self.metrics["pb_pct"] = {"10y": {"pct": 38.9, "n": 2427}}
+        self.metrics["bottom_trend"] = {"pbs_score": 0.99}
+        out = _extract_signal_metrics(self.metrics)
+        self.assertAlmostEqual(out["pb_pct_10y"], 38.9)
+        self.assertAlmostEqual(out["pbs_score"], 0.99)
+
+    def test_missing_pb_pbs_returns_none(self):
+        """无 pb_pct/bottom_trend → pb_pct_10y/pbs_score 为 None（保守不入场）"""
+        out = _extract_signal_metrics(self.metrics)
+        self.assertIsNone(out["pb_pct_10y"])
+        self.assertIsNone(out["pbs_score"])
+
+
+class TestNextQuarterDiscount(unittest.TestCase):
+    """_next_quarter_discount 优先下季，回退下月/当月。"""
+
+    def test_prefers_next_quarter(self):
+        cs = [_contract("当月", 5, 20), _contract("下月", 7, 50),
+              _contract("下季", 9.7, 150)]
+        self.assertAlmostEqual(_next_quarter_discount(cs), 9.7)
+
+    def test_fallback_next_month(self):
+        cs = [_contract("当月", 5, 20), _contract("下月", 8.1, 50)]
+        self.assertAlmostEqual(_next_quarter_discount(cs), 8.1)
+
+    def test_fallback_current_month(self):
+        cs = [_contract("当月", 6.5, 20)]
+        self.assertAlmostEqual(_next_quarter_discount(cs), 6.5)
+
+    def test_none_when_no_contracts(self):
+        self.assertIsNone(_next_quarter_discount([]))
+
+
+class TestComputeCarryScore(unittest.TestCase):
+    """_compute_carry_score 三因子缺一返回 None，全有则评分。"""
+
+    def test_current_data_60(self):
+        """贴水9.7 + PB38.9 + PBS0.99 → 60 分可持有"""
+        cs = _compute_carry_score(
+            [_contract("下季", 9.7, 150)], 38.9, 0.99)
+        self.assertIsNotNone(cs)
+        self.assertEqual(cs["total"], 60)
+        self.assertEqual(cs["band"], "holdable")
+
+    def test_missing_discount_returns_none(self):
+        """无下季/下月/当月贴水 → None"""
+        cs = _compute_carry_score([], 38.9, 0.99)
+        self.assertIsNone(cs)
+
+    def test_missing_pb_pct_returns_none(self):
+        """PB 分位缺失 → None"""
+        cs = _compute_carry_score([_contract("下季", 9.7, 150)], None, 0.99)
+        self.assertIsNone(cs)
+
+    def test_missing_pbs_returns_none(self):
+        """PBS_score 缺失 → None"""
+        cs = _compute_carry_score([_contract("下季", 9.7, 150)], 38.9, None)
+        self.assertIsNone(cs)
 
 
 class TestTargetTradeDate(unittest.TestCase):

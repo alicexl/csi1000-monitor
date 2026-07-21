@@ -24,8 +24,6 @@ def make_metrics():
         "pb": 2.58,
         "pe_ttm_pct": {"10y": _pct_entry(81.8), "5y": _pct_entry(94.1, 1220),
                        "all": _pct_entry(69.6, 2900)},
-        "pe_static_pct": {"10y": _pct_entry(75.9), "5y": _pct_entry(86.5, 1220),
-                          "all": _pct_entry(64.6, 2900)},
         "pb_pct": {"10y": _pct_entry(57.5), "5y": _pct_entry(73.5, 1220),
                    "all": _pct_entry(48.9, 2900)},
         "eps_ttm": 237.15,

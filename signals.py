@@ -7,12 +7,105 @@ from typing import Any
 @dataclass
 class Thresholds:
     entry_pe_pct: float = 50
+    entry_pb_pct: float = 50  # 入场 PB 10y 分位门槛（资产端不贵）
     warn_entry_pe_pct: float = 60
     reduce_pe_pct: float = 85
     warn_reduce_pe_pct: float = 75
     switch_days: int = 7
     # 贴水阈值统一为 0（客观定义：>0 有贴水，<=0 升水），不作为可调参数
     # 展期收益阈值也统一为 0（roll_yield > 0 = 曲线向下倾斜，展期能吃到价差）
+
+    # ─── IM Carry Score 阈值（滚贴水持有评分，满分 100）─────────────
+    # 三因子：下季贴水年化(40) + PB 10y 分位(25) + PBS_score(25)
+    carry_discount_high: float = 10.0   # 下季贴水 ≥此值 → 40 分（极佳收益）
+    carry_discount_low: float = 5.0     # 5~10% → 30 分；<此值 → 10 分
+    carry_pb_low: float = 30.0           # PB 分位 <此值 → 25 分（资产便宜）
+    carry_pb_high: float = 60.0          # 30~60% → 15 分；≥此值 → 5 分
+    carry_pbs_low_trend: float = 1.05    # PBS_score >此值 → 25 分（低于趋势=便宜）
+    carry_pbs_high_trend: float = 0.85   # 0.85~1.05 → 15 分；<此值 → 0 分（明显高=贵）
+    carry_excellent: float = 80          # 总分 ≥此值 = 极佳开仓
+    carry_holdable: float = 50           # 50~79 = 可持有；<此值 = 观望
+
+
+@dataclass
+class CarryScore:
+    """IM Carry Score 评分结果。"""
+    total: int                 # 总分 0~100
+    discount_pts: int          # 下季贴水分
+    pb_pts: int                # PB 分位分
+    pbs_pts: int               # PBS_score 分
+    discount_value: float      # 下季贴水年化 %
+    pb_pct: float             # PB 10y 分位 %
+    pbs_score: float          # PBS_score = fair/now
+    band: str                 # "excellent" | "holdable" | "wait"
+
+
+def score_carry(
+    discount_pct: float, pb_pct: float, pbs_score: float, t: Thresholds,
+) -> CarryScore:
+    """计算 IM Carry Score（三因子加权，满分 100）。
+
+    - discount_pct: 下季合约年化贴水（如 IM2612 的 9.7%），收益来源
+    - pb_pct: PB 10 年分位，资产便宜度
+    - pbs_score: PBS_score = fair/now，>1 低于趋势（便宜）
+
+    滚贴水策略最怕：高估值 + 低贴水 + 波动上升。Carry Score 综合量化
+    "收益（贴水）+ 安全（PB/PBS）"，区分极佳开仓 / 可持有观望 / 观望。
+    """
+    # 贴水分（40）
+    if discount_pct >= t.carry_discount_high:
+        discount_pts = 40
+    elif discount_pct >= t.carry_discount_low:
+        discount_pts = 30
+    else:
+        discount_pts = 10
+    # PB 分位分（25）
+    if pb_pct < t.carry_pb_low:
+        pb_pts = 25
+    elif pb_pct < t.carry_pb_high:
+        pb_pts = 15
+    else:
+        pb_pts = 5
+    # PBS_score 分（25）
+    if pbs_score > t.carry_pbs_low_trend:
+        pbs_pts = 25
+    elif pbs_score >= t.carry_pbs_high_trend:
+        pbs_pts = 15
+    else:
+        pbs_pts = 0
+
+    total = discount_pts + pb_pts + pbs_pts
+    if total >= t.carry_excellent:
+        band = "excellent"
+    elif total >= t.carry_holdable:
+        band = "holdable"
+    else:
+        band = "wait"
+    return CarryScore(
+        total=total, discount_pts=discount_pts, pb_pts=pb_pts,
+        pbs_pts=pbs_pts, discount_value=discount_pct, pb_pct=pb_pct,
+        pbs_score=pbs_score, band=band,
+    )
+
+
+def carry_suggestion(band: str, state: str) -> str:
+    """Carry Score 档位 → 区分已持仓/空仓的具体建议。
+
+    滚贴水≠价值投资：最怕高估值+低贴水+波动上升，而非单纯"贵一点"。
+    因此 Carry 高分时已持仓继续吃贴水，空仓才考虑开仓。
+    """
+    if band == "excellent":
+        if state == "holding":
+            return "极佳持有区，继续吃贴水，可考虑加仓"
+        return "极佳开仓点，贴水+估值双优，建议入场"
+    if band == "holdable":
+        if state == "holding":
+            return "可持有继续吃贴水，无需操作"
+        return "可持有区但非极佳开仓点，新增仓位等待更高贴水或估值回落"
+    # wait
+    if state == "holding":
+        return "Carry 偏弱，关注贴水收敛与估值压力，考虑减仓"
+    return "观望，贴水或估值不达标，不操作"
 
 
 @dataclass
@@ -38,44 +131,88 @@ class Signal:
 # roll_yield > 0 表示曲线向下倾斜（远月更深贴水），展期能吃到价差。
 # 当月/下月绝对贴水仅作展示参考（contracts 表 + status_line 附带）。
 def _entry_signal(metrics: dict, t: Thresholds) -> Signal | None:
-    """入场：估值低 AND 展期收益 > 0（曲线向下倾斜，展期能吃到价差）。"""
+    """入场：估值低（PE+PB 双分位）AND 资产不高于趋势（PBS）AND 展期收益 > 0。
+
+    四条件全满足才入场，把"资产底"（PBS）和"价格底"（PE/PB 分位）两轴都纳入：
+    - PE_TTM 10y 分位 < entry_pe_pct（50%）：盈利端不贵
+    - PB 10y 分位 < entry_pb_pct（50%）：资产端不贵
+    - PBS_score > carry_pbs_low_trend（1.05）：资产低于趋势线（便宜）
+    - roll_yield > 0：曲线向下倾斜，展期能吃到价差
+    任一不满足返回 None（fall through 到 warn_entry/wait）。
+    """
     pe = metrics["pe_ttm_pct_10y"]
+    pb = metrics.get("pb_pct_10y")
+    pbs = metrics.get("pbs_score")
     roll = metrics["roll_yield"]
-    if pe < t.entry_pe_pct and roll > 0:
+    # PB/PBS 缺失（数据不足）→ 保守不入场
+    if pb is None or pbs is None:
+        return None
+    if (pe < t.entry_pe_pct and pb < t.entry_pb_pct
+            and pbs > t.carry_pbs_low_trend and roll > 0):
         return Signal(
             type="entry", priority=2,
-            condition=(f"PE_TTM 10y分位 {pe:.1f}% < {t.entry_pe_pct}% "
-                       f"且 展期收益 {roll:+.1f}% > 0（曲线向下倾斜，展期可吃）"),
-            current={"pe_ttm_pct_10y": pe, "roll_yield": roll},
-            threshold={"entry_pe_pct": t.entry_pe_pct},
+            condition=(f"PE_TTM 10y分位 {pe:.1f}% < {t.entry_pe_pct}% 且 "
+                       f"PB 10y分位 {pb:.1f}% < {t.entry_pb_pct}% 且 "
+                       f"PBS_score {pbs:.2f} > {t.carry_pbs_low_trend}（低于趋势）且 "
+                       f"展期收益 {roll:+.1f}% > 0"),
+            current={"pe_ttm_pct_10y": pe, "pb_pct_10y": pb,
+                     "pbs_score": pbs, "roll_yield": roll},
+            threshold={"entry_pe_pct": t.entry_pe_pct,
+                       "entry_pb_pct": t.entry_pb_pct,
+                       "carry_pbs_low_trend": t.carry_pbs_low_trend},
             suggestion="买入 IM 当月合约入场（持有到交割后展期吃价差）",
         )
     return None
 
 
 def _warn_entry_signal(metrics: dict, t: Thresholds) -> Signal | None:
-    """预警入场：估值接近入场区 / 估值够低但曲线扁平或倒挂。"""
+    """预警入场：部分入场条件已满足但未全达标，列出到期条件提示缺口。
+
+    入场四条件（见 _entry_signal）：PE<50% / PB<50% / PBS>1.05 / roll_yield>0。
+    若至少 PE 已进入 60% 以下区间（估值不算高），且其余条件有缺口 → 预警，
+    列出每个条件的 ✓/✗，提示还需补什么。
+    """
     pe = metrics["pe_ttm_pct_10y"]
     roll = metrics["roll_yield"]
-    pe_in_zone = t.entry_pe_pct <= pe < t.warn_entry_pe_pct
-    curve_flat = pe < t.entry_pe_pct and roll <= 0
-    if pe_in_zone:
-        roll_tag = (f"展期收益 {roll:+.1f}% > 0（曲线健康）"
-                    if roll > 0
-                    else f"展期收益 {roll:+.1f}% ≤ 0（曲线扁平/倒挂）")
-        cond = (f"PE_TTM 分位 {pe:.1f}% 在 {t.entry_pe_pct}-{t.warn_entry_pe_pct}% 区间"
-                f"（接近入场）；{roll_tag}")
-    elif curve_flat:
-        cond = (f"PE_TTM {pe:.1f}% < {t.entry_pe_pct}% 但 "
-                f"展期收益 {roll:+.1f}% ≤ 0（曲线扁平/倒挂，展期吃不到价差）")
-    else:
+    pb = metrics.get("pb_pct_10y")
+    pbs = metrics.get("pbs_score")
+
+    # PE 仍偏高（≥warn_entry 60%）→ 不预警，交给 wait
+    if pe >= t.warn_entry_pe_pct:
         return None
+
+    # PE 已 <60%，逐条检查四条件，收集缺口
+    checks = [
+        ("PE<50%", pe < t.entry_pe_pct, f"PE {pe:.1f}%"),
+        ("PB<50%", pb is not None and pb < t.entry_pb_pct,
+         f"PB {pb:.1f}%" if pb is not None else "PB N/A"),
+        ("PBS>1.05", pbs is not None and pbs > t.carry_pbs_low_trend,
+         f"PBS {pbs:.2f}" if pbs is not None else "PBS N/A"),
+        ("roll_yield>0", roll > 0, f"展期 {roll:+.1f}%"),
+    ]
+    met = [name for name, ok, _ in checks if ok]
+    missing = [name for name, ok, _ in checks if not ok]
+    # 全满足 → 已是 entry，不预警；全不满足且 PE 仍 >50% → 交给 wait 处理
+    if not missing:
+        return None
+
+    # 至少一个非 PE 条件接近（PB 或 PBS 满足，或 PE 已 <50%）才预警，避免噪音
+    other_met = any(ok for name, ok, _ in checks if name != "PE<50%")
+    if pe >= t.entry_pe_pct and not other_met:
+        return None
+
+    detail = "  ".join(f"{'✓' if ok else '✗'}{lbl}({val})"
+                       for lbl, ok, val in checks)
+    cond = (f"接近入场区：{len(met)}/4 条件满足 — {detail}")
     return Signal(
         type="warn_entry", priority=4,
         condition=cond,
-        current={"pe_ttm_pct_10y": pe, "roll_yield": roll},
-        threshold={"warn_entry_pe_pct": t.warn_entry_pe_pct},
-        suggestion="密切跟踪，等待曲线修复或估值进入入场区",
+        current={"pe_ttm_pct_10y": pe, "pb_pct_10y": pb,
+                 "pbs_score": pbs, "roll_yield": roll},
+        threshold={"warn_entry_pe_pct": t.warn_entry_pe_pct,
+                   "entry_pe_pct": t.entry_pe_pct,
+                   "entry_pb_pct": t.entry_pb_pct},
+        suggestion=f"密切跟踪，待补齐：{', '.join(missing)}",
     )
 
 

@@ -1,6 +1,7 @@
 # monitor.py
 from __future__ import annotations
 import argparse
+import math
 import sys
 from pathlib import Path
 from datetime import date, datetime, timedelta
@@ -12,7 +13,7 @@ from db import (
     load_position, save_position,
 )
 from data_fetcher import fetch_valuation, fetch_main_continuous, fetch_daily_contracts, fetch_otm_call
-from signals import evaluate, Thresholds, Position
+from signals import evaluate, score_carry, Thresholds, Position
 from reporter import generate_report, render_status_line
 
 
@@ -79,6 +80,181 @@ def pe_pb_divergence(pe_pct: float, pb_pct: float) -> float:
     PB 高 ≠ 净资产高；PB 高 = 单位净资产卖得贵 = B 相对 P 偏低。
     """
     return pe_pct - pb_pct
+
+
+# ─── PBS 底部回归（原 bottom_trend.py）─────────────────────────
+# PBS = close / pb ≈ 指数隐含净资产 B。对 PBS 的历史局部低点做对数回归
+# ln(PBS) = a + b*t，拟合"净资产底部抬升趋势线"。当前 PBS 距趋势线的 %
+# 反映长期估值底视角：低于趋势线 = 长期便宜，高于 = 长期偏贵。
+#
+# 用 PBS 而非纯点位：PBS 剥离了 PE/PB 周期波动，只保留净资产复利增长，
+# 对数回归 R²≈0.90（vs 纯点位 0.46），底部抬升规律性远优于点位。
+BOTTOM_WINDOW_DAYS = 20  # 局部低点检测窗口（±交易日）；±20 → 31 个低点，R²≈0.91
+BOTTOM_MIN_POINTS = 3   # 拟合最少低点数，不足返回 None
+BOTTOM_START_DATE = "2014-10-17"  # PB 数据起点（指数上市首日）；此前无官方 PB
+
+# PB 压缩空间情景：固定资产 B（=当前 PBS），看不同 PB 分位下的点位与跌幅。
+# 用历史 PB 分位（而非固定值）定义情景：当前 → 50%中位 → 25% → 10%低估，
+# 跨周期可比，避免固定值（如 1.5）随时间失效。
+PB_COMPRESSION_PERCENTILES = [50, 25, 10]
+
+
+def compute_pbs(close: float, pb: float) -> float:
+    """PBS = 指数点位 / 市净率 ≈ 隐含净资产 B。pb<=0 返回 0（无意义）。"""
+    if pb <= 0:
+        return 0.0
+    return close / pb
+
+
+def percentile_value(series: list[float], pct: float) -> float | None:
+    """反查分位对应的值：pct% 分位 → series 中第 pct/100*n 大的值。
+
+    与 percentile()（当前值在序列中的分位）互为反函数。series 升序。
+    样本不足返回 None。
+    """
+    if not series:
+        return None
+    s = sorted(series)
+    idx = min(int(pct / 100 * len(s)), len(s) - 1)
+    return s[idx]
+
+
+def pb_compression_scenarios(
+    current_close: float, current_pb: float,
+    pb_history: list[float] | None = None,
+    pcts: list[int] = PB_COMPRESSION_PERCENTILES,
+) -> list[dict] | None:
+    """PB 压缩空间：固定资产 B=close/pb，算各 PB 分位情景对应点位与跌幅。
+
+    逻辑：P = B × PB，B 固定（当前净资产），PB 越低 → P 越低。
+    情景用历史 PB 分位定义（50%中位/25%/10%低估），跨周期可比。
+    返回 [{pb, price, drop_pct, tag}, ...] 含当前行 + 各分位情景，或 None。
+    drop_pct = (price - current) / current * 100（负值=跌幅）。
+    无历史 PB 时退化为只用当前行。
+    """
+    if current_pb <= 0 or current_close <= 0:
+        return None
+    book = current_close / current_pb  # 资产 B 固定
+    rows = [{"pb": current_pb, "price": current_close, "drop_pct": 0.0,
+             "tag": "当前"}]
+    if pb_history:
+        for pct in pcts:
+            pb = percentile_value(pb_history, pct)
+            if pb is None:
+                continue
+            price = book * pb
+            drop = (price - current_close) / current_close * 100
+            rows.append({"pb": pb, "price": price, "drop_pct": drop,
+                         "tag": f"PB {pct}%分位"})
+    return rows
+
+
+# 底部回归理论点位：PBS 偏离比分位（历史 PBS 相对当日趋势线的偏离 = PBS_now/PBS_fair）
+THEORY_DEV_PERCENTILES = [50, 25, 10]
+
+
+def _compute_theory_points(
+    dev_ratios: list[float], trend_now: float, current_pb: float,
+    current_pbs: float,
+) -> list[dict] | None:
+    """回归框架下理论点位：偏离比分位 × 当前趋势线 × 当前 PB。
+
+    dev_ratios: 历史 PBS_now/PBS_fair 偏离比序列（>1 高于趋势，<1 低于）。
+    理论点位 = 趋势线值(trend_now) × 偏离比分位 × 当前 PB。
+    返回 [{ratio, price, drop_pct, tag}, ...] 含纯趋势线 + 各分位 + 当前偏离行。
+    与 PB 分位情景点位对称：那块固定 B 看 PB 分位，这块固定 PB 看 PBS 偏离分位。
+    """
+    if not dev_ratios or trend_now <= 0 or current_pb <= 0:
+        return None
+    rows = []
+    # 纯趋势线（偏离=1.0）= 资产沿长期增长趋势的公允点位
+    rows.append({
+        "ratio": 1.0, "price": trend_now * current_pb,
+        "drop_pct": 0.0, "tag": "回归趋势线",
+    })
+    for pct in THEORY_DEV_PERCENTILES:
+        ratio = percentile_value(dev_ratios, pct)
+        if ratio is None:
+            continue
+        price = trend_now * ratio * current_pb
+        rows.append({
+            "ratio": ratio, "price": price,
+            "drop_pct": 0.0, "tag": f"PBS偏离{pct}%分位",
+        })
+    # 当前偏离行（drop_pct 相对纯趋势线点位）
+    base_price = trend_now * current_pb
+    for r in rows:
+        r["drop_pct"] = (r["price"] - base_price) / base_price * 100 if base_price > 0 else 0.0
+    # 当前 PBS 对应点位（用真实 close 反推，便于对照）
+    rows.append({
+        "ratio": current_pbs / trend_now if trend_now > 0 else 0.0,
+        "price": current_pbs * current_pb,
+        "drop_pct": (current_pbs * current_pb - base_price) / base_price * 100 if base_price > 0 else 0.0,
+        "tag": "当前",
+    })
+    return rows
+
+
+def detect_local_lows(
+    points: list[tuple[str, float]], window: int = BOTTOM_WINDOW_DAYS,
+) -> list[tuple[str, float]]:
+    """检测局部低点：每个点在 ±window 窗口内是最低值。
+
+    points: [(date_str, value), ...] 按日期升序。窗口两端不足的点跳过。
+    牛市回调的"伪低点"会被宽窗口过滤（±60 日 ≈ 季度级，只留中级以上底）。
+    """
+    n = len(points)
+    if n < 2 * window + 1:
+        return []
+    lows = []
+    for i in range(window, n - window):
+        win_min = min(points[j][1] for j in range(i - window, i + window + 1))
+        if points[i][1] == win_min:
+            lows.append(points[i])
+    return lows
+
+
+def fit_bottom_trend(
+    lows: list[tuple[str, float]], window: int = BOTTOM_WINDOW_DAYS,
+) -> dict | None:
+    """对 PBS 低点做对数回归 ln(value) = a + b*date_ordinal。
+
+    返回 {a, b, r2, annual_pct, trend_now, n, window} 或 None（低点不足）。
+    - annual_pct: 趋势线年化抬升率 = b*365*100（对数回归下即净资产年化增速）
+    - trend_now: 当前日期的趋势线值 = exp(a + b*t_today)
+    - window: 低点检测窗口（供 reporter 展示，避免跨模块依赖常量）
+    """
+    if len(lows) < BOTTOM_MIN_POINTS:
+        return None
+    xs, ys = [], []
+    for d, v in lows:
+        if v <= 0:
+            continue
+        xs.append(datetime.strptime(d[:10], "%Y-%m-%d").toordinal())
+        ys.append(math.log(v))
+    if len(xs) < BOTTOM_MIN_POINTS:
+        return None
+
+    n = len(xs)
+    mx = sum(xs) / n
+    my = sum(ys) / n
+    sxx = sum((x - mx) ** 2 for x in xs)
+    sxy = sum((x - mx) * (y - my) for x, y in zip(xs, ys))
+    b = sxy / sxx
+    a = my - b * mx
+    ss_tot = sum((y - my) ** 2 for y in ys)
+    ss_res = sum((y - (a + b * x)) ** 2 for x, y in zip(xs, ys))
+    r2 = 1 - ss_res / ss_tot if ss_tot > 0 else 0.0
+
+    today_ord = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).toordinal()
+    trend_now = math.exp(a + b * today_ord)
+    return {
+        "a": a, "b": b, "r2": r2,
+        "annual_pct": b * 365 * 100,
+        "trend_now": trend_now,
+        "n": n,
+        "window": window,
+    }
 
 
 # 预期收益计算的默认假设（来自杨康平《股指期货吃贴水策略》PDF 经验值）
@@ -223,6 +399,8 @@ def _extract_signal_metrics(metrics: dict) -> dict:
     return {
         "pe_ttm_pct_10y": metrics["pe_ttm_pct"].get("10y", {}).get("pct")
                           or 100,  # 样本不足（None）→ 100，保守 wait 不入场
+        "pb_pct_10y": metrics.get("pb_pct", {}).get("10y", {}).get("pct"),  # None → 不入场
+        "pbs_score": (metrics.get("bottom_trend") or {}).get("pbs_score"),  # None → 不入场
         "current_month_discount": d_near,
         "current_month_days": cur_month["days_to_expire"] if cur_month else 999,
         "next_month_discount": d_far,
@@ -293,6 +471,102 @@ def _scan() -> int:
     return 0
 
 
+def _compute_bottom_trend(
+    history: list[dict], current_close: float, current_pb: float,
+) -> dict | None:
+    """从估值历史构造 PBS 序列 → 检测低点 → 对数回归 → 补当前 PBS 指标。
+
+    只用 BOTTOM_START_DATE（2014-10-17）之后的数据——此前无官方 PB。
+    返回 fit_bottom_trend 结果 + 当前 PBS + pbs_score + 最近低点 + 理论点位 +
+    PB 分位情景点位，或 None。
+
+    pbs_score = PBS_fair / PBS_now：>1 资产折价(便宜)，=1 正常，<1 资产溢价(贵)。
+    """
+    points = []
+    pb_history = []
+    for r in history:
+        d = r.get("date")
+        c = r.get("close")
+        pb = r.get("pb")
+        if d is None or c is None or pb is None or pb <= 0:
+            continue
+        if str(d)[:10] < BOTTOM_START_DATE:
+            continue
+        points.append((str(d)[:10], c / pb))
+        pb_history.append(pb)
+    if len(points) < 2 * BOTTOM_WINDOW_DAYS + 1:
+        return None
+
+    lows = detect_local_lows(points, BOTTOM_WINDOW_DAYS)
+    fit = fit_bottom_trend(lows)
+    if fit is None:
+        return None
+
+    cur_pbs = compute_pbs(current_close, current_pb)
+    fit["current_pbs"] = cur_pbs
+    # PBS_score = 趋势线 / 当前，>1 便宜 <1 贵
+    fit["pbs_score"] = fit["trend_now"] / cur_pbs if cur_pbs > 0 else 0.0
+    fit["recent_low"] = lows[-1] if lows else None
+
+    # 回归框架下理论点位：PBS 相对当日趋势线的偏离比 (=PBS_now/PBS_fair) 的
+    # 历史分位 × 当前趋势线值 × 当前 PB。偏离比 >1 高于趋势(贵)，<1 低于(便宜)。
+    # 与 PB 分位情景点位对称：那块固定 B 看 PB 分位，这块固定 PB 看 PBS 偏离分位。
+    a, b = fit["a"], fit["b"]
+    ratios = []
+    for d, v in points:
+        try:
+            t_ord = datetime.strptime(d, "%Y-%m-%d").toordinal()
+            fair = math.exp(a + b * t_ord)
+            if fair > 0:
+                ratios.append(v / fair)
+        except (ValueError, OverflowError):
+            continue
+    fit["theory_points"] = _compute_theory_points(
+        ratios, fit["trend_now"], current_pb, cur_pbs)
+
+    # PB 压缩空间：固定资产 B，各 PB 情景对应点位与跌幅
+    fit["pb_compression"] = pb_compression_scenarios(
+        current_close, current_pb, pb_history)
+    return fit
+
+
+def _next_quarter_discount(contracts: list[dict]) -> float | None:
+    """取"下季"合约的年化贴水（如 IM2612）。
+
+    下季合约代表较长期限的贴水水平，比当月/下月更稳定，适合做 Carry Score 的
+    收益锚点。无下季合约时回退下月，再回退当月；都没有返回 None。
+    """
+    for ctype in ("下季", "下月", "当月"):
+        c = next((x for x in contracts if x.get("contract_type") == ctype), None)
+        if c and c.get("annualized_discount") is not None:
+            return c["annualized_discount"]
+    return None
+
+
+def _compute_carry_score(
+    contracts: list[dict],
+    pb_pct_10y: float | None,
+    pbs_score: float | None,
+    t: Thresholds = THRESHOLDS,
+) -> dict | None:
+    """组装 IM Carry Score。三因子缺任一（如下季贴水或 PBS 未算出）返回 None。"""
+    discount = _next_quarter_discount(contracts)
+    # 三因子任一缺失则不评分（避免用默认值误导）
+    if discount is None or pb_pct_10y is None or pbs_score is None:
+        return None
+    cs = score_carry(discount, pb_pct_10y, pbs_score, t)
+    return {
+        "total": cs.total,
+        "discount_pts": cs.discount_pts,
+        "pb_pts": cs.pb_pts,
+        "pbs_pts": cs.pbs_pts,
+        "discount_value": cs.discount_value,
+        "pb_pct": cs.pb_pct,
+        "pbs_score": cs.pbs_score,
+        "band": cs.band,
+    }
+
+
 def _build_metrics(conn) -> dict:
     """从 DB 拉数据，组装 metrics dict 供 signals/reporter 使用。"""
     latest = query_latest_valuation(conn)
@@ -303,7 +577,6 @@ def _build_metrics(conn) -> dict:
 
     # 多区间分位
     pe_ttm_pct = compute_pct_for_windows(history, latest, "pe_ttm", PCT_WINDOWS)
-    pe_static_pct = compute_pct_for_windows(history, latest, "pe_static", PCT_WINDOWS)
     pb_pct = compute_pct_for_windows(history, latest, "pb", PCT_WINDOWS)
 
     pe_ttm = latest.get("pe_ttm") or 0
@@ -312,6 +585,9 @@ def _build_metrics(conn) -> dict:
 
     # 10 年窗口 PE_TTM 中位数（用于估值回归预期）
     pe_median_10y = _window_median(history, "pe_ttm", WINDOW_DAYS["10y"])
+
+    # PBS 底部回归：close/pb ≈ 隐含净资产，对历史局部低点对数回归拟合底部抬升趋势线
+    bottom_trend = _compute_bottom_trend(history, close, pb)
 
     # 主力连续贴水分位（近2年）
     main_hist = query_main_continuous_history(conn, days=730)
@@ -330,7 +606,6 @@ def _build_metrics(conn) -> dict:
         "pe_static": latest.get("pe_static") or 0,
         "pb": pb,
         "pe_ttm_pct": pe_ttm_pct,
-        "pe_static_pct": pe_static_pct,
         "pb_pct": pb_pct,
         "eps_ttm": close / pe_ttm if pe_ttm else 0,
         "bps": close / pb if pb else 0,
@@ -339,7 +614,15 @@ def _build_metrics(conn) -> dict:
             pb_pct.get("10y", {}).get("pct") or 0),
         "contracts": contracts,
         "main_continuous_discount_pct": main_pct,
+        "bottom_trend": bottom_trend,
     }
+
+    # IM Carry Score（下季贴水 + PB 分位 + PBS_score，满分 100）
+    metrics["carry_score"] = _compute_carry_score(
+        contracts,
+        pb_pct.get("10y", {}).get("pct"),
+        bottom_trend.get("pbs_score") if bottom_trend else None,
+    )
 
     # 预期收益三因子（PDF 框架：ROE + 分红 + 估值变动；展期收益单独看 roll_yield）
     metrics["expected_return"] = _compute_expected_return(

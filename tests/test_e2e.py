@@ -82,7 +82,6 @@ class TestE2EReport(unittest.TestCase):
         history = query_valuation_history(self.conn, days=3650)
         contracts = query_contracts_by_date(self.conn, latest["date"])
         pe_ttm_pct = compute_pct_for_windows(history, latest, "pe_ttm", PCT_WINDOWS)
-        pe_s_pct = compute_pct_for_windows(history, latest, "pe_static", PCT_WINDOWS)
         pb_pct = compute_pct_for_windows(history, latest, "pb", PCT_WINDOWS)
         main_hist = query_main_continuous_history(self.conn, days=730)
         main_basises = [abs(r["basis"]) for r in main_hist if r.get("basis") is not None]
@@ -93,7 +92,7 @@ class TestE2EReport(unittest.TestCase):
             "date": latest["date"], "close": latest["close"],
             "pe_ttm": latest["pe_ttm"], "pe_static": latest["pe_static"],
             "pb": latest["pb"],
-            "pe_ttm_pct": pe_ttm_pct, "pe_static_pct": pe_s_pct, "pb_pct": pb_pct,
+            "pe_ttm_pct": pe_ttm_pct, "pb_pct": pb_pct,
             "eps_ttm": latest["close"] / latest["pe_ttm"],
             "bps": latest["close"] / latest["pb"],
             "pe_pb_divergence": pe_pb_divergence(
