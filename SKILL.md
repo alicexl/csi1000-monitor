@@ -34,14 +34,15 @@ cd D:/workspace/csi1000-monitor && python monitor.py run 2>&1 | grep -v "UserWar
 
 ## 策略逻辑（解读数据用）
 
-- **入场条件**：PE_TTM 10 年分位 <50% **且** roll_yield >0（曲线向下倾斜）
-- **预警入场**：PE_TTM 分位 50–60%，或估值够低但 roll_yield ≤0（曲线异常）
+- **入场条件**（四条件全满足）：PE_TTM 10y 分位 <50% **且** PB 10y 分位 <50% **且** PBS_score >1.05（资产低于趋势线）**且** roll_yield >0（曲线向下倾斜）
+- **预警入场**：部分条件满足但未全达标（warn_entry 列出 PE/PB/PBS/roll 四条件的 ✓/✗ 缺口）
 - **减仓条件**：PE_TTM 10 年分位 >85% **或** roll_yield ≤0（曲线扁平/倒挂）
 - **预警减仓**：PE_TTM 分位 75–85%
 - **合约切换**：当月剩余天数 <7 天时切下月
 - **卖 Call 增厚**：持有 IM 多头时卖 10% OTM 当月 call 增厚收益
+- **IM Carry Score**（独立评分）：下季贴水(40)+PB分位(25)+PBS_score(25)=满分100，≥80极佳开仓/50-79可持有/<50观望，按持仓状态给建议（不替代信号，作为持有视角补充）
 
-策略本质：低估时入场，吃 backwardation 下的展期收益（roll_yield）+ 估值上涨。曲线斜率 >0 才持有；曲线扁平/倒挂立即离场。
+策略本质：低估时入场，吃 backwardation 下的展期收益（roll_yield）+ 估值上涨。曲线斜率 >0 才持有；曲线扁平/倒挂立即离场。入场把"资产底(PBS)和价格底(PE/PB)两轴"都纳入判断。
 
 ## 估值反推：预测入场点位（2026-07-19 测算）
 
@@ -84,8 +85,8 @@ cd D:/workspace/csi1000-monitor && python monitor.py run 2>&1 | grep -v "UserWar
 
 | 持仓状态 | 信号 | 含义 |
 |---|---|---|
-| 空仓 | `entry` | 双条件达标，建议入场 |
-| 空仓 | `warn_entry` | 接近入场区 |
+| 空仓 | `entry` | 四条件达标（PE<50% + PB<50% + PBS>1.05 + roll_yield>0），建议入场 |
+| 空仓 | `warn_entry` | 部分条件达标，列四条件缺口 |
 | 空仓 | `wait` | 估值偏高或贴水不足 |
 | 持仓 | `reduce` | 估值过高，减仓 |
 | 持仓 | `warn_reduce` | 接近减仓区 |
@@ -99,8 +100,8 @@ cd D:/workspace/csi1000-monitor && python monitor.py run 2>&1 | grep -v "UserWar
 读取后向用户展示：
 
 1. **信号 + 状态**：空仓 🟡 / 持仓 🟢 + 信号名
-2. **估值面板**：PE_TTM / PE 静态 / PB 的多区间分位
-3. **底部点位回归**：PBS=close/pb（隐含净资产）对历史局部低点对数回归拟合底部抬升趋势线，展示 R²、年化抬升、当前 PBS 距底 %；附回归框架理论点位表（PBS 偏离比分位 × 趋势线 × 当前PB，长期估值底视角，与横向分位互补）
+2. **估值面板**：PE_TTM / PB 的多区间分位（近10年/5年/全历史）
+3. **底部点位回归**：PBS=close/pb（隐含净资产）对历史局部低点(±20日窗口)对数回归拟合底部抬升趋势线，展示 R²、底部抬升率、PBS_score(fair/now)；附回归框架理论点位表（PBS 偏离比分位 × 趋势线 × 当前PB，长期估值底视角，与横向分位互补）
 4. **PB 分位情景点位**：不同 PB 分位情景对应点位与跌幅（估值杀跌风险）
 5. **IM Carry Score**：下季贴水(40)+PB分位(25)+PBS_score(25)=满分100，区分极佳开仓/可持有观望/观望，按持仓状态给建议
 6. **期货合约**：IM 当月/下月/当季/下季的基差和年化贴水率
@@ -109,7 +110,7 @@ cd D:/workspace/csi1000-monitor && python monitor.py run 2>&1 | grep -v "UserWar
 
 ## 配置
 
-阈值在 `D:/workspace/csi1000-monitor/monitor.py` 顶部（`THRESHOLDS` / `PCT_WINDOWS`）。
+阈值在 `D:/workspace/csi1000-monitor/signals.py` 的 `Thresholds` dataclass（入场/减仓/Carry Score 阈值）+ `monitor.py` 顶部的 `PCT_WINDOWS` / `BOTTOM_WINDOW_DAYS`（底部回归窗口）。
 
 **持仓状态用 CLI 子命令持久化到 SQLite**：
 
@@ -130,8 +131,6 @@ python monitor.py close                          # 平仓
 | `KeyError` 列名 | akshare 改了列名 | 检查 `data_fetcher.py` 的 rename 映射 |
 | `stock_index_pb_lg` 报 `pb_w` | 第 4 列是等权不是加权 | 自己算分位（详见 `memory/akshare-pitfalls.md`）|
 
-## 历史背景与设计文档
+## 设计文档
 
-- 设计：`docs/superpowers/specs/2026-07-12-csi1000-monitor-design.md`
-- 实施计划：`docs/superpowers/plans/2026-07-12-csi1000-monitor.md`
 - akshare 数据接口陷阱：`memory/akshare-pitfalls.md`
