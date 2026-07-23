@@ -96,15 +96,15 @@ def carry_suggestion(band: str, state: str) -> str:
     """
     if band == "excellent":
         if state == "holding":
-            return "极佳持有区，继续吃贴水，可考虑加仓"
+            return "极佳持有区，继续吃贴水"
         return "极佳开仓点，贴水+估值双优，建议入场"
     if band == "holdable":
         if state == "holding":
             return "可持有继续吃贴水，无需操作"
-        return "可持有区但非极佳开仓点，新增仓位等待更高贴水或估值回落"
+        return "可持有区但非极佳开仓点，建议暂不开仓，等待更高贴水或估值回落"
     # wait
     if state == "holding":
-        return "Carry 偏弱，关注贴水收敛与估值压力，考虑减仓"
+        return "Carry 偏弱，关注贴水收敛与估值压力，考虑平仓"
     return "观望，贴水或估值不达标，不操作"
 
 
@@ -238,7 +238,7 @@ def _reduce_pe_signal(metrics: dict, t: Thresholds) -> Signal | None:
             condition=f"PE_TTM 10y分位 {pe:.1f}% > {t.reduce_pe_pct}%",
             current={"pe_ttm_pct_10y": pe},
             threshold={"reduce_pe_pct": t.reduce_pe_pct},
-            suggestion="减仓/平仓止盈",
+            suggestion="平仓止盈",
         )
     return None
 
@@ -270,7 +270,7 @@ def _warn_reduce_signal(metrics: dict, t: Thresholds) -> Signal | None:
             condition=f"PE_TTM 分位 {pe:.1f}% 在 {t.warn_reduce_pe_pct}-{t.reduce_pe_pct}% 区间",
             current={"pe_ttm_pct_10y": pe},
             threshold={"warn_reduce_pe_pct": t.warn_reduce_pe_pct, "reduce_pe_pct": t.reduce_pe_pct},
-            suggestion="准备减仓",
+            suggestion="准备平仓",
         )
     return None
 

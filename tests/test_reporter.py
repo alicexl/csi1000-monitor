@@ -5,7 +5,7 @@ import unittest
 from signals import Signal, Position, Thresholds
 from reporter import (generate_report, render_status_line, format_signals_section,
                       _fmt_pct_window, _expected_return_panel, _discount_coverage_panel,
-                      _entry_check_panel)
+                      _entry_check_panel, _exit_check_panel)
 
 
 def make_position(status="empty"):
@@ -133,34 +133,6 @@ class TestStatusLine(unittest.TestCase):
         self.assertNotIn("🟢", line)
 
 
-class TestOperationAdvice(unittest.TestCase):
-    """操作建议：同 priority 多信号都展示。"""
-
-    def test_single_advice(self):
-        pos = make_position("empty")
-        metrics = make_metrics()
-        sigs = [Signal("wait", 5, "PE 70%", {}, {}, "继续等待")]
-        report = generate_report("2026-07-10", pos, metrics, sigs)
-        self.assertIn("继续等待", report)
-
-    def test_multiple_top_priority_advices(self):
-        """两个 priority=1 的 reduce 信号，suggestion 都应出现在操作建议里"""
-        pos = make_position("holding")
-        metrics = make_metrics()
-        sigs = [
-            Signal("reduce", 1, "PE > 85%", {"pe": 90}, {}, "估值过高，平仓止盈"),
-            Signal("reduce", 1, "贴水 ≤ 0", {"disc": -1}, {}, "升水失效，立即平仓"),
-            Signal("switch", 3, "天数 <7", {}, {}, "考虑换月"),
-        ]
-        report = generate_report("2026-07-10", pos, metrics, sigs)
-        # 操作建议 section 只提取出来看
-        advice_section = report.split("## 操作建议")[1]
-        self.assertIn("估值过高，平仓止盈", advice_section)
-        self.assertIn("升水失效，立即平仓", advice_section)
-        # switch 不是 top priority，不出现在操作建议 section
-        self.assertNotIn("考虑换月", advice_section)
-
-
 class TestExpectedReturnPanel(unittest.TestCase):
     """三因子预期收益 panel 渲染（ROE + 分红 + 估值变动，无展期收益分量）。"""
 
@@ -181,16 +153,16 @@ class TestExpectedReturnPanel(unittest.TestCase):
         self.assertIn("5 年复利", out)
 
     def test_panel_in_full_report(self):
-        pos = make_position()
+        pos = make_position("holding")
         metrics = make_metrics()
-        sigs = [Signal("wait", 5, "PE 高", {}, {}, "继续等待")]
+        sigs = [Signal("hold", 5, "持有", {}, {}, "继续持有")]
         report = generate_report("2026-07-10", pos, metrics, sigs)
         self.assertIn("预期收益", report)
         self.assertIn("ROE", report)
 
 
 class TestDiscountCoveragePanel(unittest.TestCase):
-    """贴水覆盖性 panel：下季贴水 × N 年 vs PB 杀跌，标已覆盖/未覆盖。"""
+    """贴水覆盖性 panel：持有 1 年的展期贴水 vs PB 杀跌，标已覆盖/未覆盖。"""
 
     def _cov(self):
         return {
@@ -258,6 +230,45 @@ class TestEntryCheckPanel(unittest.TestCase):
         report_holding = generate_report(
             "2026-07-10", make_position("holding"), metrics, [])
         self.assertNotIn("开仓信号检查", report_holding)
+
+
+class TestExitCheckPanel(unittest.TestCase):
+    """平仓信号检查：PE>85% 或 roll_yield≤0，任一触发即平仓。"""
+
+    def _m(self, pe_pct, roll):
+        return {
+            "pe_ttm_pct": {"10y": {"pct": pe_pct, "n": 2400}},
+            "roll_yield": roll,
+        }
+
+    def test_safe_no_exit(self):
+        """PE 72%（安全区）+ roll>0 → 未触发平仓，继续持有"""
+        out = _exit_check_panel(self._m(72, 2.0))
+        self.assertIn("未触发平仓", out)
+        self.assertIn("安全区", out)
+
+    def test_pe_high_triggers_exit(self):
+        """PE 90%（平仓区）→ 触发平仓（PE 过高）"""
+        out = _exit_check_panel(self._m(90, 2.0))
+        self.assertIn("触发平仓信号", out)
+        self.assertIn("PE 过高", out)
+        self.assertIn("平仓区", out)
+
+    def test_roll_bad_triggers_exit(self):
+        """展期 contango（roll≤0）→ 触发平仓（展期失效）"""
+        out = _exit_check_panel(self._m(72, -1.0))
+        self.assertIn("触发平仓信号", out)
+        self.assertIn("展期失效", out)
+
+    def test_in_full_report_holding_state_only(self):
+        """持仓报告含平仓信号检查；空仓不展示"""
+        metrics = make_metrics()
+        metrics["roll_yield"] = 2.0
+        report = generate_report("2026-07-10", make_position("holding"), metrics, [])
+        self.assertIn("平仓信号检查", report)
+        report_empty = generate_report(
+            "2026-07-10", make_position("empty"), metrics, [])
+        self.assertNotIn("平仓信号检查", report_empty)
 
 
 class TestFmtPctWindow(unittest.TestCase):

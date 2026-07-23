@@ -602,7 +602,7 @@ def _compute_discount_coverage(
     contracts: list[dict], bottom_trend: dict | None,
     years: tuple = (1,),
 ) -> dict | None:
-    """下季贴水年化 × 1 年 vs PB -1σ/-2σ 跌幅，判断能否覆盖。
+    """持有 1 年的展期贴水 vs PB -1σ/-2σ 跌幅，判断能否覆盖。
 
     辅助决策视角：持有吃贴水 1 年的累计收益，能否填平一次 PB 杀跌。
     贴水只看 1 年——更长 horizon 是贴水均值回归的外推，不可靠；3 年才覆盖说明
@@ -677,7 +677,7 @@ def _build_metrics(conn) -> dict:
         bottom_trend,
     )
 
-    # 贴水覆盖性（下季贴水年化 × N 年 vs PB 杀跌跌幅，辅助决策）
+    # 贴水覆盖性（持有 1 年的展期贴水 vs PB 杀跌跌幅，辅助决策）
     metrics["discount_coverage"] = _compute_discount_coverage(contracts, bottom_trend)
 
     # 预期收益三因子（PDF 框架：ROE + 分红 + 估值变动；展期收益单独看 roll_yield）

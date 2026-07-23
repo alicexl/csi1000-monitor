@@ -385,12 +385,12 @@ class TestCarryScore(unittest.TestCase):
         """同档不同持仓状态建议不同"""
         # 可持有档
         self.assertIn("继续吃贴水", carry_suggestion("holdable", "holding"))
-        self.assertIn("新增仓位等待", carry_suggestion("holdable", "empty"))
+        self.assertIn("建议暂不开仓", carry_suggestion("holdable", "empty"))
         # 极佳档
-        self.assertIn("加仓", carry_suggestion("excellent", "holding"))
+        self.assertIn("继续吃贴水", carry_suggestion("excellent", "holding"))
         self.assertIn("入场", carry_suggestion("excellent", "empty"))
         # 观望档
-        self.assertIn("减仓", carry_suggestion("wait", "holding"))
+        self.assertIn("平仓", carry_suggestion("wait", "holding"))
         self.assertIn("不操作", carry_suggestion("wait", "empty"))
 
 

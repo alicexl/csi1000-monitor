@@ -102,6 +102,47 @@ def _entry_check_panel(metrics: dict) -> str:
     )
 
 
+def _exit_check_panel(metrics: dict) -> str:
+    """平仓信号检查：PE 过高 + 展期失效，任一触发即平仓。
+
+    平仓 = PE>85% 或 roll_yield≤0 两条件任一满足（与开仓的"三条件全满足"相反）。
+    持仓状态下无论信号都展示，让平仓触发条件是否满足一目了然。
+    """
+    t = Thresholds()
+    pe = metrics["pe_ttm_pct"].get("10y", {}).get("pct")
+    roll = metrics.get("roll_yield", 0.0)
+
+    def _zone(v):
+        if v is None:
+            return "N/A"
+        if v > t.reduce_pe_pct:
+            return "平仓区"
+        if v > t.warn_reduce_pe_pct:
+            return "预警区"
+        return "安全区"
+
+    pe_high = pe is not None and pe > t.reduce_pe_pct
+    roll_bad = roll <= 0
+    pe_str = f"{pe:.1f}%（{_zone(pe)}）" if pe is not None else "N/A"
+    roll_str = (f"{roll:+.1f}%（价格 contango/平水，展期失效）" if roll_bad
+                else f"{roll:+.1f}%（价格 back，展期健康）")
+    triggers = []
+    if pe_high:
+        triggers.append("PE 过高")
+    if roll_bad:
+        triggers.append("展期失效")
+    verdict = ("⚠️ 触发平仓信号（" + " + ".join(triggers) + "）" if triggers
+               else "✅ 未触发平仓（2/2 安全，继续持有）")
+
+    return (
+        "| 条件 | 当前 | 门槛 | 触发 |\n"
+        "|---|---|---|---|\n"
+        f"| PE_TTM 10y 分位 | {pe_str} | >{t.reduce_pe_pct:.0f}% | {'✅' if pe_high else '✗'} |\n"
+        f"| 展期收益 | {roll_str} | ≤0 | {'✅' if roll_bad else '✗'} |\n"
+        f"\n**{verdict}**"
+    )
+
+
 def _contracts_table(metrics: dict) -> str:
     rows = []
     for c in metrics.get("contracts", []):
@@ -184,7 +225,7 @@ def _pb_compression_panel(rows: list) -> str:
 
 
 def _discount_coverage_panel(cov: dict) -> str:
-    """贴水覆盖性 panel：下季贴水年化 × 1 年 vs PB -1σ/-2σ 跌幅。
+    """贴水覆盖性 panel：持有 1 年的展期贴水 vs PB -1σ/-2σ 跌幅。
 
     回答"持有吃贴水 1 年，能否扛住一次 PB 杀跌"。展期收益线性累计（保守口径）。
     -1σ 是主判（常态杀跌，贴水应覆盖），-2σ 仅极端参考（黑天鹅级，不要求覆盖）。
@@ -273,6 +314,8 @@ def _expected_return_panel(er: dict) -> str:
     val_sign = "+" if val >= 0 else ""
 
     lines = [
+        '> **持仓视角**：持有 IM 多头时长期年化回报的来源拆解（ROE 涨幅 + 分红 + 估值回归）。',
+        "",
         "| 分量 | 值 | 说明 |",
         "|---|---|---|",
         f"| ROE（PB/PE 反推） | {roe:+.1f}% | 估值不变时的长期涨幅代理 |",
@@ -286,7 +329,7 @@ def _expected_return_panel(er: dict) -> str:
         f"**含估值回归 1 年预期**：`{er['annual_with_mean_reversion_pct']:+.1f}%` "
         f"（假设 PE 1 年内回到 10 年中位数）",
         "",
-        "> 展期收益（roll_yield）见状态行和期货合约表的基差；期限结构会变化，不计入多年复利预测。",
+        "> 展期收益（贴水收益，来自期货折价 + 期限结构）与上表三因子（持有现货的基本面回报）是不同维度，见状态行/期货合约表；期限结构会变，不计入多年复利预测。",
     ]
     return "\n".join(lines)
 
@@ -334,6 +377,11 @@ def generate_report(
         lines.append("### 开仓信号检查")
         lines.append(_entry_check_panel(metrics))
         lines.append("")
+    # 持仓状态：平仓信号检查（PE 过高 + 展期失效，任一触发即平仓）
+    elif state == "holding":
+        lines.append("### 平仓信号检查")
+        lines.append(_exit_check_panel(metrics))
+        lines.append("")
 
     lines.append("## 估值面板")
     lines.append(_valuation_table(metrics))
@@ -342,8 +390,8 @@ def generate_report(
     div = metrics.get("pe_pb_divergence", 0)
     if div > 10:
         lines.append(
-            f"PE-PB 背离：+{div:.1f}pp — PE 分位显著高于 PB：市场对盈利恢复已有定价，"
-            f"但资产估值仍处中低区间"
+            f"PE-PB 背离：+{div:.1f}pp — PE 分位显著高于 PB：盈利回暖的预期已经反映在股价里，"
+            f"但按净资产看仍不算贵"
         )
         lines.append(
             "> 若盈利无法兑现恢复，PE 高分位可能转为估值压力"
@@ -369,53 +417,43 @@ def generate_report(
     # 贴水覆盖性：PB 杀跌跌幅 × 下季贴水年限（跌幅来自 pb_compression）
     cov = metrics.get("discount_coverage")
     if cov:
-        lines.append("## 贴水覆盖性（下季贴水 × 1 年 vs PB 杀跌）")
+        lines.append("## 贴水覆盖性（1 年展期贴水 vs PB 跌幅）")
         lines.append(_discount_coverage_panel(cov))
         lines.append("")
 
-    # IM Carry Score（滚贴水持有评分）— 需要持仓状态给建议
-    cs = metrics.get("carry_score")
-    if cs:
-        lines.append("## IM Carry Score（滚贴水持有评分）")
-        lines.append(_carry_score_panel(cs, state))
-        lines.append("")
-
-    er = metrics.get("expected_return")
-    if er:
-        lines.append("## 预期收益（三因子：ROE + 分红 + 估值变动）")
-        lines.append(_expected_return_panel(er))
-        lines.append("")
-
+    # 期货合约（IM 当日市场数据）
     lines.append("## 期货合约（IM 当日）")
     lines.append(_contracts_table(metrics))
     lines.append("")
 
+    # 卖 Call 增厚分析（10% OTM）— 持仓专属：备兑卖 call 需先持有 IM 多头
     opt = metrics.get("otm_call")
-    if opt:
+    if opt and state == "holding":
         lines.append("## 卖 Call 增厚分析（10% OTM）")
         lines.append(_option_table(opt))
         lines.append("")
 
-    # 操作建议（最小 priority 的所有信号都展示，避免同 priority 多信号丢一个）
-    if signals:
-        top_priority = min(s.priority for s in signals)
-        top_sigs = [s for s in signals if s.priority == top_priority]
-        lines.append("## 操作建议")
-        for s in top_sigs:
-            lines.append(f"- {s.suggestion}")
-        # Carry Score 档位建议（区分已持仓/空仓，补信号系统没有的持仓视角）
-        cs = metrics.get("carry_score")
-        if cs:
-            lines.append(f"- [Carry {cs['total']}/100] {carry_suggestion(cs['band'], state)}")
+    # IM Carry Score（滚贴水持有评分）— 持仓专属：持有视角的滚贴水评分
+    cs = metrics.get("carry_score")
+    if cs and state == "holding":
+        lines.append("## IM Carry Score（滚贴水持有评分）")
+        lines.append(_carry_score_panel(cs, state))
         lines.append("")
 
     # 持仓盈亏（holding 状态）
     if state == "holding" and position.entry_price:
         entry = position.entry_price
         pnl_pct = (close - entry) / entry * 100
-        lines.append(f"## 持仓盈亏")
+        lines.append("## 持仓盈亏")
         lines.append(f"入场 {position.entry_date} @ {entry:.0f}，"
                      f"当前 {close:.0f}，浮盈 {pnl_pct:+.1f}%")
+        lines.append("")
+
+    # 持仓预期收益（持有 IM 多头时长期年化回报拆解）— 持仓专属
+    er = metrics.get("expected_return")
+    if er and state == "holding":
+        lines.append("## 持仓预期收益（三因子：ROE + 分红 + 估值变动）")
+        lines.append(_expected_return_panel(er))
         lines.append("")
 
     # 附录：BPS 底部回归（净资产底缓慢抬升的方法论证明，非每次决策的操作信号）

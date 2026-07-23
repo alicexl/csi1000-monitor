@@ -160,7 +160,7 @@ class TestComputeCarryScore(unittest.TestCase):
 
 
 class TestDiscountCoverage(unittest.TestCase):
-    """_compute_discount_coverage：下季贴水 × 1 年 vs PB -1σ/-2σ 跌幅。"""
+    """_compute_discount_coverage：持有 1 年的展期贴水 vs PB -1σ/-2σ 跌幅。"""
 
     def _bt(self):
         return {"pb_compression": [
