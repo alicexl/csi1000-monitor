@@ -71,26 +71,8 @@ def init_db(db_path: Path) -> sqlite3.Connection:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA busy_timeout=5000")
         conn.executescript(SCHEMA)
-        _apply_migrations(conn)
         conn.commit()
     return conn
-
-
-def _apply_migrations(conn: sqlite3.Connection) -> None:
-    """幂等迁移：删已废弃的列与残留行。
-
-    - pe_static 列（2026-07-23 移除：拉取入库传递但从不算分位/展示）。
-      SQLite 3.35+ 才支持 DROP COLUMN，低版本静默跳过（列残留无害）。
-    - 主力连续 symbol='IM0' 残留行（2026-07-23 移除：贴水分位功能已删，
-      不再有 IM0 写入路径）。清空历史残留，避免污染合约查询。
-    """
-    cols = {r[1] for r in conn.execute("PRAGMA table_info(daily_valuation)")}
-    if "pe_static" in cols:
-        try:
-            conn.execute("ALTER TABLE daily_valuation DROP COLUMN pe_static")
-        except sqlite3.OperationalError:
-            pass  # SQLite <3.35 不支持，列残留无害（已停止读写）
-    conn.execute("DELETE FROM daily_contracts WHERE symbol = 'IM0'")
 
 
 def upsert_valuation(conn: sqlite3.Connection, row: dict[str, Any]) -> str:
