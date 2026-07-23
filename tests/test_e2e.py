@@ -19,19 +19,19 @@ def seed_fixture_db(db_path):
     """灌入 10 天模拟数据 + 4 个合约。"""
     conn = init_db(Path(db_path))
     # 10 天估值（模拟 PE 从 30 升到 35）
-    for i, (d, close, pe_t, pe_s, pb_v) in enumerate([
-        ("2026-07-01", 8000, 30.0, 31.0, 2.40),
-        ("2026-07-02", 8050, 30.5, 31.5, 2.42),
-        ("2026-07-03", 8100, 31.0, 32.0, 2.45),
-        ("2026-07-04", 8150, 32.0, 33.0, 2.48),
-        ("2026-07-07", 8200, 33.0, 34.0, 2.50),
-        ("2026-07-08", 8117, 33.5, 34.5, 2.55),
-        ("2026-07-09", 8300, 34.0, 35.0, 2.56),
-        ("2026-07-10", 8198, 34.57, 35.77, 2.58),
+    for i, (d, close, pe_t, pb_v) in enumerate([
+        ("2026-07-01", 8000, 30.0, 2.40),
+        ("2026-07-02", 8050, 30.5, 2.42),
+        ("2026-07-03", 8100, 31.0, 2.45),
+        ("2026-07-04", 8150, 32.0, 2.48),
+        ("2026-07-07", 8200, 33.0, 2.50),
+        ("2026-07-08", 8117, 33.5, 2.55),
+        ("2026-07-09", 8300, 34.0, 2.56),
+        ("2026-07-10", 8198, 34.57, 2.58),
     ]):
         upsert_valuation(conn, {
             "date": d, "close": close,
-            "pe_static": pe_s, "pe_ttm": pe_t,
+            "pe_ttm": pe_t,
             "pb": pb_v,
             "fetched_at": "2026-07-12T10:00:00",
         })
@@ -50,18 +50,6 @@ def seed_fixture_db(db_path):
             "basis": basis, "annualized_discount": disc,
             "fetched_at": "2026-07-12T10:00:00",
         })
-    # 主力连续 5 天
-    for d, close in [("2026-07-04", 8150), ("2026-07-07", 8180),
-                     ("2026-07-08", 8090), ("2026-07-09", 8270),
-                     ("2026-07-10", 8170)]:
-        upsert_contract(conn, {
-            "date": d, "symbol": "IM0", "name": "主力连续",
-            "contract_type": "主力", "close": close, "settle": close,
-            "volume": 200000, "open_interest": 120000,
-            "expire_date": None, "days_to_expire": None,
-            "basis": close - 8198, "annualized_discount": 0,
-            "fetched_at": "2026-07-12T10:00:00",
-        })
     return conn
 
 
@@ -77,20 +65,15 @@ class TestE2EReport(unittest.TestCase):
 
     def _build_metrics(self):
         from db import (query_latest_valuation, query_valuation_history,
-                        query_contracts_by_date, query_main_continuous_history)
+                        query_contracts_by_date)
         latest = query_latest_valuation(self.conn)
-        history = query_valuation_history(self.conn, days=3650)
+        history = query_valuation_history(self.conn)
         contracts = query_contracts_by_date(self.conn, latest["date"])
         pe_ttm_pct = compute_pct_for_windows(history, latest, "pe_ttm", PCT_WINDOWS)
         pb_pct = compute_pct_for_windows(history, latest, "pb", PCT_WINDOWS)
-        main_hist = query_main_continuous_history(self.conn, days=730)
-        main_basises = [abs(r["basis"]) for r in main_hist if r.get("basis") is not None]
-        cur_main_abs = abs(main_hist[-1]["basis"]) if main_hist else 0
-        main_pct = (sum(1 for b in main_basises if b <= cur_main_abs) / len(main_basises) * 100
-                    if main_basises else None)
         return {
             "date": latest["date"], "close": latest["close"],
-            "pe_ttm": latest["pe_ttm"], "pe_static": latest["pe_static"],
+            "pe_ttm": latest["pe_ttm"],
             "pb": latest["pb"],
             "pe_ttm_pct": pe_ttm_pct, "pb_pct": pb_pct,
             "eps_ttm": latest["close"] / latest["pe_ttm"],
@@ -99,7 +82,6 @@ class TestE2EReport(unittest.TestCase):
                 pe_ttm_pct.get("10y", {}).get("pct") or 0,
                 pb_pct.get("10y", {}).get("pct") or 0),
             "contracts": contracts,
-            "main_continuous_discount_pct": main_pct,
         }
 
     def test_empty_state_report(self):
@@ -110,12 +92,15 @@ class TestE2EReport(unittest.TestCase):
         next_month = next(c for c in metrics["contracts"] if c["contract_type"] == "下月")
         d_near = cur_month["annualized_discount"]
         d_far = next_month["annualized_discount"]
+        # roll_yield = (当月价 − 下月价)/当月价（价格 back 判定，非年化贴水斜率）
+        near_p, far_p = cur_month["close"], next_month["close"]
+        roll = (near_p - far_p) / near_p * 100
         sigs = evaluate("empty", {
             "pe_ttm_pct_10y": metrics["pe_ttm_pct"]["10y"].get("pct") or 100,
             "current_month_discount": d_near,
             "current_month_days": cur_month["days_to_expire"],
             "next_month_discount": d_far,
-            "roll_yield": d_far - d_near,
+            "roll_yield": roll,
         }, t)
         report = generate_report("2026-07-10", pos, metrics, sigs)
         # 关键内容存在
@@ -136,16 +121,18 @@ class TestE2EReport(unittest.TestCase):
         next_month = next(c for c in metrics["contracts"] if c["contract_type"] == "下月")
         d_near = cur_month["annualized_discount"]
         d_far = next_month["annualized_discount"]
+        # roll_yield = (当月价 − 下月价)/当月价（价格 back 判定）
+        near_p, far_p = cur_month["close"], next_month["close"]
+        roll = (near_p - far_p) / near_p * 100
         sigs = evaluate("holding", {
             "pe_ttm_pct_10y": metrics["pe_ttm_pct"]["10y"].get("pct") or 100,
             "current_month_discount": d_near,
             "current_month_days": cur_month["days_to_expire"],
             "next_month_discount": d_far,
-            "roll_yield": d_far - d_near,
+            "roll_yield": roll,
         }, t)
         top = min(sigs, key=lambda s: s.priority)
-        line = render_status_line("2026-07-10", pos, metrics, top.type,
-                                 d_far - d_near)
+        line = render_status_line("2026-07-10", pos, metrics, top.type, roll)
         self.assertIn("持仓", line)
         self.assertIn("2026-07-10", line)
         self.assertIn("展期收益", line)

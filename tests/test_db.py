@@ -9,7 +9,7 @@ from datetime import datetime
 from db import (
     init_db, upsert_valuation, upsert_contract,
     insert_signal, query_latest_valuation, query_valuation_history,
-    query_contracts_by_date, query_main_continuous_history,
+    query_contracts_by_date,
     load_position, save_position,
     SCHEMA,
 )
@@ -85,7 +85,7 @@ class TestValuationCRUD(unittest.TestCase):
     def test_upsert_and_query_latest(self):
         row = {
             "date": "2026-07-10", "close": 8198.31,
-            "pe_static": 35.77, "pe_ttm": 34.57,
+            "pe_ttm": 34.57,
             "pb": 2.58,
             "fetched_at": "2026-07-12T10:00:00",
         }
@@ -101,7 +101,7 @@ class TestValuationCRUD(unittest.TestCase):
         """重复插入同一天 → updated，且数值被新值覆盖"""
         row = {
             "date": "2026-07-10", "close": 8198.31,
-            "pe_static": 35.77, "pe_ttm": 34.57,
+            "pe_ttm": 34.57,
             "pb": 2.58,
             "fetched_at": "2026-07-12T10:00:00",
         }
@@ -117,7 +117,8 @@ class TestValuationCRUD(unittest.TestCase):
         latest = query_latest_valuation(self.conn)
         self.assertAlmostEqual(latest["close"], 8250.0, places=2)
         self.assertAlmostEqual(latest["pe_ttm"], 34.80, places=2)
-        self.assertEqual(latest["fetched_at"], "2026-07-12T20:00:00")
+        # fetched_at 不随 update 刷新，保留首次入库时间
+        self.assertEqual(latest["fetched_at"], "2026-07-12T10:00:00")
         # 行数仍是 1（不是新增）
         cnt = self.conn.execute(
             "SELECT COUNT(*) FROM daily_valuation WHERE date = '2026-07-10'"
@@ -128,11 +129,11 @@ class TestValuationCRUD(unittest.TestCase):
         for d, close in [("2026-07-08", 8117.86), ("2026-07-09", 8300.08), ("2026-07-10", 8198.31)]:
             upsert_valuation(self.conn, {
                 "date": d, "close": close,
-                "pe_static": 35.0, "pe_ttm": 34.0,
+                "pe_ttm": 34.0,
                 "pb": 2.5,
                 "fetched_at": "2026-07-12T10:00:00",
             })
-        hist = query_valuation_history(self.conn, days=10)
+        hist = query_valuation_history(self.conn, max_rows=10)
         self.assertEqual(len(hist), 3)
         self.assertEqual(hist[-1]["close"], 8198.31)
 
@@ -148,10 +149,9 @@ class TestContractCRUD(unittest.TestCase):
         os.unlink(self.path)
 
     def test_upsert_and_query_by_date(self):
-        """query_contracts_by_date 排除 IM0（主力连续）"""
-        # 插入 2 个普通合约 + 1 个主力连续
+        """query_contracts_by_date 返回当日全部合约（按 symbol 升序）"""
         results = {}
-        for sym, ctype in [("IM2607", "当月"), ("IM2608", "下月"), ("IM0", "主力")]:
+        for sym, ctype in [("IM2607", "当月"), ("IM2608", "下月")]:
             results[sym] = upsert_contract(self.conn, {
                 "date": "2026-07-10", "symbol": sym, "name": f"中证1000 {sym[-2:]}",
                 "contract_type": ctype, "close": 8150.0, "settle": 8145.0,
@@ -163,10 +163,8 @@ class TestContractCRUD(unittest.TestCase):
         # 首次都是 inserted
         self.assertEqual(set(results.values()), {"inserted"})
         rows = query_contracts_by_date(self.conn, "2026-07-10")
-        # 只返回 2 个（排除 IM0）
         self.assertEqual(len(rows), 2)
-        symbols = [r["symbol"] for r in rows]
-        self.assertNotIn("IM0", symbols)
+        self.assertEqual([r["symbol"] for r in rows], ["IM2607", "IM2608"])
 
     def test_upsert_contract_updates_values(self):
         """同一 (date, symbol) 重复插入 → updated，数值被覆盖"""
@@ -189,22 +187,8 @@ class TestContractCRUD(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertAlmostEqual(rows[0]["close"], 8180.0)
         self.assertAlmostEqual(rows[0]["basis"], -18.31)
-        self.assertEqual(rows[0]["fetched_at"], "2026-07-12T20:00:00")
-
-    def test_main_continuous_history(self):
-        """主力连续合约 symbol='IM0' 单独查询"""
-        for d, close in [("2026-07-08", 8100), ("2026-07-09", 8280), ("2026-07-10", 8170)]:
-            upsert_contract(self.conn, {
-                "date": d, "symbol": "IM0", "name": "主力连续",
-                "contract_type": "主力", "close": close, "settle": close,
-                "volume": 200000, "open_interest": 120000,
-                "expire_date": None, "days_to_expire": None,
-                "basis": -50, "annualized_discount": 8.0,
-                "fetched_at": "2026-07-12T10:00:00",
-            })
-        hist = query_main_continuous_history(self.conn, days=10)
-        self.assertEqual(len(hist), 3)
-
+        # fetched_at 不随 update 刷新，保留首次入库时间
+        self.assertEqual(rows[0]["fetched_at"], "2026-07-12T10:00:00")
 
 class TestSignalCRUD(unittest.TestCase):
     def setUp(self):

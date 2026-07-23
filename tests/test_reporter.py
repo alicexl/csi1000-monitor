@@ -4,7 +4,8 @@ import unittest
 
 from signals import Signal, Position, Thresholds
 from reporter import (generate_report, render_status_line, format_signals_section,
-                      _fmt_pct_window, _expected_return_panel)
+                      _fmt_pct_window, _expected_return_panel, _discount_coverage_panel,
+                      _entry_check_panel)
 
 
 def make_position(status="empty"):
@@ -20,7 +21,6 @@ def make_metrics():
         "date": "2026-07-10",
         "close": 8198.31,
         "pe_ttm": 34.57,
-        "pe_static": 35.77,
         "pb": 2.58,
         "pe_ttm_pct": {"10y": _pct_entry(81.8), "5y": _pct_entry(94.1, 1220),
                        "all": _pct_entry(69.6, 2900)},
@@ -37,7 +37,6 @@ def make_metrics():
              "days_to_expire": 35, "expire_date": "2026-08-21",
              "basis": -100.31, "annualized_discount": 12.8},
         ],
-        "main_continuous_discount_pct": 65.0,
         "expected_return": {
             "roe_pct": 2.58 / 34.57 * 100,  # ≈ 7.46
             "dividend_yield_pct": 1.0,
@@ -104,7 +103,7 @@ class TestStatusLine(unittest.TestCase):
         self.assertIn("展期收益", line)
 
     def test_status_line_uses_roll_yield_label(self):
-        """status_line 应显示'展期收益'标签（roll_yield = 下月-当月贴水）"""
+        """status_line 应显示'展期收益'标签（roll_yield = 展期一次收益率，价格是否 back）"""
         pos = make_position("empty")
         metrics = make_metrics()
         line = render_status_line("2026-07-10", pos, metrics, "wait", 2.5)
@@ -190,6 +189,77 @@ class TestExpectedReturnPanel(unittest.TestCase):
         self.assertIn("ROE", report)
 
 
+class TestDiscountCoveragePanel(unittest.TestCase):
+    """贴水覆盖性 panel：下季贴水 × N 年 vs PB 杀跌，标已覆盖/未覆盖。"""
+
+    def _cov(self):
+        return {
+            "discount_annual": 15.0,
+            "years": [1],
+            "scenarios": [
+                {"label": "-1σ", "drop_pct": -11.0},
+                {"label": "-2σ", "drop_pct": -26.2},
+            ],
+        }
+
+    def test_coverage_labels(self):
+        # 1年-1σ: 15-11=+4 已覆盖；1年-2σ: 15-26.2=-11.2 未覆盖
+        out = _discount_coverage_panel(self._cov())
+        self.assertIn("✅ 已覆盖", out)
+        self.assertIn("❌ 未覆盖", out)
+        self.assertIn("累计贴水", out)
+        self.assertIn("跌11%", out)
+
+    def test_margin_values(self):
+        out = _discount_coverage_panel(self._cov())
+        self.assertIn("+15.0%", out)   # 1 年累计贴水
+        self.assertIn("+4.0%", out)    # 1 年 -1σ 已覆盖 margin
+
+    def test_in_full_report(self):
+        metrics = make_metrics()
+        metrics["discount_coverage"] = self._cov()
+        report = generate_report("2026-07-10", make_position(), metrics, [])
+        self.assertIn("贴水覆盖性", report)
+
+
+class TestEntryCheckPanel(unittest.TestCase):
+    """开仓信号检查：PE/PB 分位区间 + 展期收益 三条件达标与否。"""
+
+    def _m(self, pe_pct, pb_pct, roll):
+        return {
+            "pe_ttm_pct": {"10y": {"pct": pe_pct, "n": 2400}},
+            "pb_pct": {"10y": {"pct": pb_pct, "n": 2400}},
+            "roll_yield": roll,
+        }
+
+    def test_all_met_fits_entry(self):
+        """PE/PB<50% + roll>0 → 符合开仓信号，区间标'入场区'"""
+        out = _entry_check_panel(self._m(40, 40, 2.0))
+        self.assertIn("符合开仓信号", out)
+        self.assertIn("入场区", out)
+
+    def test_pe_high_blocks_entry(self):
+        """PE 72%（观望区）→ 未达开仓"""
+        out = _entry_check_panel(self._m(72, 35, 2.0))
+        self.assertIn("未达开仓", out)
+        self.assertIn("观望区", out)
+
+    def test_roll_negative_blocks_entry(self):
+        """展期 contango（roll<0）→ 未达开仓"""
+        out = _entry_check_panel(self._m(40, 40, -1.0))
+        self.assertIn("未达开仓", out)
+
+    def test_in_full_report_empty_state_only(self):
+        """空仓报告含开仓信号检查；持仓状态不展示"""
+        metrics = make_metrics()
+        metrics["roll_yield"] = 2.0
+        report = generate_report("2026-07-10", make_position("empty"), metrics, [])
+        self.assertIn("开仓信号检查", report)
+        report_holding = generate_report(
+            "2026-07-10", make_position("holding"), metrics, [])
+        self.assertNotIn("开仓信号检查", report_holding)
+
+
 class TestFmtPctWindow(unittest.TestCase):
 
     def test_normal(self):
@@ -208,10 +278,6 @@ class TestFmtPctWindow(unittest.TestCase):
 
     def test_none_entry(self):
         """entry=None → 'N/A'"""
-        self.assertEqual(_fmt_pct_window(None), "N/A")
-
-    def test_none_entry_returns_na(self):
-        """整个 entry 是 None → 'N/A'"""
         self.assertEqual(_fmt_pct_window(None), "N/A")
 
 

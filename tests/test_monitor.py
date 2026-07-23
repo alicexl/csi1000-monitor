@@ -10,22 +10,23 @@ from unittest.mock import patch
 from monitor import (
     _extract_signal_metrics, _target_trade_date, _load_position,
     cmd_open, cmd_close, _compute_expected_return, _window_median,
-    _compute_carry_score, _next_quarter_discount,
+    _compute_carry_score, _next_quarter_discount, _compute_discount_coverage,
 )
 from db import init_db, load_position
 
 
-def _contract(ctype, disc, days):
+def _contract(ctype, disc, days, close=7000):
     return {
         "contract_type": ctype,
         "annualized_discount": disc,
         "days_to_expire": days,
+        "close": close,
     }
 
 
 class TestExtractSignalMetrics(unittest.TestCase):
-    """_extract_signal_metrics 返回当月贴水、下月贴水、roll_yield（= 下月 - 当月）。
-    策略判断基于 roll_yield（曲线斜率），贴水作展示参考。"""
+    """_extract_signal_metrics 返回当月贴水、下月贴水、roll_yield（= (当月价−下月价)/当月价）。
+    策略判断基于 roll_yield（价格是否 back），贴水作展示参考。"""
 
     def setUp(self):
         self.metrics = {
@@ -38,34 +39,49 @@ class TestExtractSignalMetrics(unittest.TestCase):
         }
 
     def test_returns_roll_yield_and_discounts(self):
-        """当月 + 下月都有 → 返回 d_near / d_far / roll_yield / days"""
+        """当月 + 下月都有 → 返回 d_near / d_far / roll_yield / days。
+        roll_yield = (当月价 − 下月价)/当月价（价格 back 判定，与年化贴水无关）"""
         self.metrics["contracts"] = [
-            _contract("当月", 5.0, 20),
-            _contract("下月", 7.0, 50),
+            _contract("当月", 5.0, 20, close=7000),
+            _contract("下月", 7.0, 50, close=6860),
         ]
         out = _extract_signal_metrics(self.metrics)
         self.assertAlmostEqual(out["current_month_discount"], 5.0)
         self.assertAlmostEqual(out["next_month_discount"], 7.0)
         self.assertEqual(out["current_month_days"], 20)
-        # roll_yield = 下月 - 当月（曲线斜率）
+        # roll_yield = (7000 − 6860)/7000 = 2.0%（下月更便宜 = 价格 back）
+        # 注：年化贴水下月 7% > 当月 5% 只是巧合同号，roll_yield 只看价格
         self.assertAlmostEqual(out["roll_yield"], 2.0)
 
-    def test_roll_yield_negative_when_curve_inverted(self):
-        """曲线倒挂（near > far）→ roll_yield < 0"""
+    def test_roll_yield_ignores_annualized_slope(self):
+        """关键：年化贴水斜率 ≤ 0 但价格仍 back → roll_yield > 0（不误判异常）。
+        当月年化 8%、下月年化 5%（年化斜率 -3%，旧口径会判异常），但下月价更低 → back。"""
         self.metrics["contracts"] = [
-            _contract("当月", 7.2, 35),
-            _contract("下月", 0.0, 3),   # 实际不会发生，仅测算法
+            _contract("当月", 8.0, 30, close=7000),
+            _contract("下月", 5.0, 58, close=6940),  # 下月价更低 = back
         ]
         out = _extract_signal_metrics(self.metrics)
-        self.assertAlmostEqual(out["roll_yield"], 0.0 - 7.2)
+        # (7000 − 6940)/7000 = 0.857% > 0 → 价格 back，展期吃价差
+        self.assertGreater(out["roll_yield"], 0)
+        self.assertAlmostEqual(out["roll_yield"], 0.857, places=2)
 
-    def test_no_next_month_roll_yield_negative(self):
-        """无下月合约 → next_month_discount = 0，roll_yield = -near"""
+    def test_roll_yield_negative_when_contango(self):
+        """价格 contango（下月比当月贵）→ roll_yield < 0"""
+        self.metrics["contracts"] = [
+            _contract("当月", 5.0, 20, close=7000),
+            _contract("下月", 7.0, 50, close=7070),
+        ]
+        out = _extract_signal_metrics(self.metrics)
+        # (7000 − 7070)/7000 = -1.0%（下月更贵 = contango）
+        self.assertAlmostEqual(out["roll_yield"], -1.0)
+
+    def test_no_next_month_roll_yield_zero(self):
+        """无下月合约 → 无法展期，roll_yield = 0（判 ≤0 异常）"""
         self.metrics["contracts"] = [_contract("当月", 5.0, 20)]
         out = _extract_signal_metrics(self.metrics)
         self.assertAlmostEqual(out["current_month_discount"], 5.0)
         self.assertAlmostEqual(out["next_month_discount"], 0)
-        self.assertAlmostEqual(out["roll_yield"], -5.0)
+        self.assertAlmostEqual(out["roll_yield"], 0.0)
 
     def test_no_contracts_returns_zeros(self):
         """无合约数据 → 全 0/999（触发 wait 兜底）"""
@@ -75,21 +91,18 @@ class TestExtractSignalMetrics(unittest.TestCase):
         self.assertAlmostEqual(out["roll_yield"], 0)
         self.assertEqual(out["current_month_days"], 999)
 
-    def test_extracts_pb_and_pbs_for_entry(self):
-        """_extract_signal_metrics 抽出 pb_pct_10y + pbs_score 供新 entry 判断"""
+    def test_extracts_pb_for_entry(self):
+        """_extract_signal_metrics 抽出 pb_pct_10y 供 entry 判断"""
         self.metrics["contracts"] = [_contract("当月", 5.0, 20),
                                      _contract("下月", 7.0, 50)]
         self.metrics["pb_pct"] = {"10y": {"pct": 38.9, "n": 2427}}
-        self.metrics["bottom_trend"] = {"pbs_score": 0.99}
         out = _extract_signal_metrics(self.metrics)
         self.assertAlmostEqual(out["pb_pct_10y"], 38.9)
-        self.assertAlmostEqual(out["pbs_score"], 0.99)
 
-    def test_missing_pb_pbs_returns_none(self):
-        """无 pb_pct/bottom_trend → pb_pct_10y/pbs_score 为 None（保守不入场）"""
+    def test_missing_pb_returns_none(self):
+        """无 pb_pct → pb_pct_10y 为 None（保守不入场）"""
         out = _extract_signal_metrics(self.metrics)
         self.assertIsNone(out["pb_pct_10y"])
-        self.assertIsNone(out["pbs_score"])
 
 
 class TestNextQuarterDiscount(unittest.TestCase):
@@ -115,28 +128,66 @@ class TestNextQuarterDiscount(unittest.TestCase):
 class TestComputeCarryScore(unittest.TestCase):
     """_compute_carry_score 三因子缺一返回 None，全有则评分。"""
 
+    def _bt(self, sigma1=-11.0):
+        """bottom_trend 含 -1σ 跌幅（驱动覆盖比 coverage_ratio）"""
+        return {"pb_compression": [
+            {"tag": "PB 15.9%分位 (-1σ)", "drop_pct": sigma1}]}
+
     def test_current_data_60(self):
-        """贴水9.7 + PB38.9 + PBS0.99 → 60 分可持有"""
+        """贴水9.7 + PB38.9 + 覆盖0.88(9.7/11) → 30+15+15=60 可持有"""
         cs = _compute_carry_score(
-            [_contract("下季", 9.7, 150)], 38.9, 0.99)
+            [_contract("下季", 9.7, 150)], 38.9, self._bt())
         self.assertIsNotNone(cs)
         self.assertEqual(cs["total"], 60)
         self.assertEqual(cs["band"], "holdable")
+        self.assertAlmostEqual(cs["coverage_ratio"], 9.7 / 11.0, places=2)
 
     def test_missing_discount_returns_none(self):
         """无下季/下月/当月贴水 → None"""
-        cs = _compute_carry_score([], 38.9, 0.99)
-        self.assertIsNone(cs)
+        self.assertIsNone(_compute_carry_score([], 38.9, self._bt()))
 
     def test_missing_pb_pct_returns_none(self):
         """PB 分位缺失 → None"""
-        cs = _compute_carry_score([_contract("下季", 9.7, 150)], None, 0.99)
-        self.assertIsNone(cs)
+        self.assertIsNone(_compute_carry_score(
+            [_contract("下季", 9.7, 150)], None, self._bt()))
 
-    def test_missing_pbs_returns_none(self):
-        """PBS_score 缺失 → None"""
-        cs = _compute_carry_score([_contract("下季", 9.7, 150)], 38.9, None)
-        self.assertIsNone(cs)
+    def test_missing_sigma1_returns_none(self):
+        """bottom_trend 无 -1σ 跌幅 → None"""
+        self.assertIsNone(_compute_carry_score(
+            [_contract("下季", 9.7, 150)], 38.9, {"pb_compression": []}))
+        self.assertIsNone(_compute_carry_score(
+            [_contract("下季", 9.7, 150)], 38.9, None))
+
+
+class TestDiscountCoverage(unittest.TestCase):
+    """_compute_discount_coverage：下季贴水 × 1 年 vs PB -1σ/-2σ 跌幅。"""
+
+    def _bt(self):
+        return {"pb_compression": [
+            {"pb": 2.29, "price": 7196, "drop_pct": 0.0, "tag": "当前"},
+            {"pb": 2.60, "price": 8170, "drop_pct": 13.5, "tag": "PB 50%分位 (0σ)"},
+            {"pb": 2.04, "price": 6410, "drop_pct": -11.0, "tag": "PB 15.9%分位 (-1σ)"},
+            {"pb": 1.69, "price": 5310, "drop_pct": -26.2, "tag": "PB 2.3%分位 (-2σ)"},
+        ]}
+
+    def test_picks_minus_sigma_scenarios(self):
+        """只取 -1σ/-2σ 左尾情景，discount/years/drop_pct 透传"""
+        cov = _compute_discount_coverage([_contract("下季", 10.9, 150)], self._bt())
+        self.assertAlmostEqual(cov["discount_annual"], 10.9)
+        self.assertEqual(cov["years"], [1])
+        self.assertEqual([s["label"] for s in cov["scenarios"]], ["-1σ", "-2σ"])
+        self.assertAlmostEqual(cov["scenarios"][0]["drop_pct"], -11.0)
+
+    def test_missing_discount_returns_none(self):
+        self.assertIsNone(_compute_discount_coverage([], self._bt()))
+
+    def test_missing_bottom_trend_returns_none(self):
+        self.assertIsNone(_compute_discount_coverage([_contract("下季", 10.9, 150)], None))
+
+    def test_no_sigma_rows_returns_none(self):
+        """pb_compression 无 σ 情景（如缺历史 PB）→ None"""
+        self.assertIsNone(_compute_discount_coverage(
+            [_contract("下季", 10.9, 150)], {"pb_compression": [{"tag": "当前"}]}))
 
 
 class TestTargetTradeDate(unittest.TestCase):

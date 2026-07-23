@@ -2,7 +2,7 @@
 from __future__ import annotations
 from typing import Any
 
-from signals import Signal, Position, carry_suggestion
+from signals import Signal, Position, carry_suggestion, Thresholds
 
 STATE_LABEL = {
     "empty": "🟡 空仓等待",
@@ -59,6 +59,49 @@ def _valuation_table(metrics: dict) -> str:
     )
 
 
+def _entry_check_panel(metrics: dict) -> str:
+    """开仓信号检查：PE/PB 10y 分位区间 + 展期收益，三条件达标与否。
+
+    入场 = PE<50% + PB<50% + roll_yield>0 三条件全满足。空仓状态下无论信号都展示，
+    让 PE/PB 所处分位区间与展期收益状态、是否构成开仓信号一目了然。
+    """
+    t = Thresholds()
+    pe = metrics["pe_ttm_pct"].get("10y", {}).get("pct")
+    pb = metrics.get("pb_pct", {}).get("10y", {}).get("pct")
+    roll = metrics.get("roll_yield", 0.0)
+
+    def _zone(v):
+        if v is None:
+            return "N/A"
+        if v < 50:
+            return "入场区"
+        if v < 60:
+            return "接近区"
+        if v < 75:
+            return "观望区"
+        if v < 85:
+            return "偏高区"
+        return "过高区"
+
+    pe_ok = pe is not None and pe < t.entry_pe_pct
+    pb_ok = pb is not None and pb < t.entry_pb_pct
+    roll_ok = roll > 0
+    pe_str = f"{pe:.1f}%（{_zone(pe)}）" if pe is not None else "N/A"
+    pb_str = f"{pb:.1f}%（{_zone(pb)}）" if pb is not None else "N/A"
+    met = pe_ok + pb_ok + roll_ok
+    verdict = ("✅ 符合开仓信号" if pe_ok and pb_ok and roll_ok
+               else f"❌ 未达开仓（{met}/3 满足）")
+
+    return (
+        "| 条件 | 当前 | 门槛 | 达标 |\n"
+        "|---|---|---|---|\n"
+        f"| PE_TTM 10y 分位 | {pe_str} | <{t.entry_pe_pct:.0f}% | {'✅' if pe_ok else '✗'} |\n"
+        f"| PB 10y 分位 | {pb_str} | <{t.entry_pb_pct:.0f}% | {'✅' if pb_ok else '✗'} |\n"
+        f"| 展期收益 | {roll:+.1f}% | >0 | {'✅' if roll_ok else '✗'} |\n"
+        f"\n**{verdict}**"
+    )
+
+
 def _contracts_table(metrics: dict) -> str:
     rows = []
     for c in metrics.get("contracts", []):
@@ -75,73 +118,56 @@ def _contracts_table(metrics: dict) -> str:
 
 
 def _bottom_trend_panel(bt: dict) -> str:
-    """PBS 底部回归 panel。
+    """BPS 净资产趋势回归 panel（附录：净资产底缓慢抬升的方法论证明）。
 
-    PBS = close/pb ≈ 隐含净资产。对历史局部低点对数回归 ln(PBS)=a+b*t 拟合
-    "净资产底部抬升趋势线"。当前 PBS 距趋势线的指标是长期估值底视角。
-
-    pbs_score = 趋势线/当前：>1 资产折价(便宜)，=1 正常，<1 资产溢价(贵)。
+    BPS = close/pb = 隐含每股净资产。对**全量 BPS 点**做对数回归 ln(BPS)=a+b*t，
+    证明"净资产长期复利增长、底部不归零"——这是"中证 1000 有基本面支撑"的论据，
+    供策略底层假设参考，非每次决策的操作信号（BPS 偏离趋势线反映盈利周期非估值）。
+    另附全量点线性回归（每年加多少点）作为净资产整体增长的直观口径。
     """
     r2 = bt["r2"]
     annual = bt["annual_pct"]
     trend = bt["trend_now"]
-    cur = bt["current_pbs"]
-    score = bt["pbs_score"]
+    cur = bt["current_bps"]
     n = bt["n"]
-    recent = bt.get("recent_low")
 
-    # 距底解读（基于 pbs_score：>1 便宜，<1 贵）
-    if score > 1.05:
-        score_tag = "资产折价，长期视角偏便宜"
-    elif score > 0.95:
-        score_tag = "贴近趋势线，长期视角接近底部"
-    elif score > 0.85:
-        score_tag = "资产微溢价，长期视角中性"
-    else:
-        score_tag = "资产溢价，长期视角偏贵"
-
-    recent_str = ""
-    if recent:
-        recent_str = f"\n| 最近低点 | {recent[0]}  PBS={recent[1]:.0f} |"
-
-    # 回归框架理论点位表：PBS 偏离比分位 × 趋势线 × PB
-    theory_str = ""
-    tp = bt.get("theory_points")
-    if tp:
-        theory_str = (
-            "\n\n**回归框架理论点位**（PBS 偏离比分位 × 趋势线 × 当前PB）：\n"
-            "\n"
-            "| PBS偏离比 | 理论点位 | 距趋势线 | 情景 |\n"
-            "|---|---|---|---|\n"
+    # 线性回归行（全量点，每年加多少点；缺失则不展示）
+    linear_str = ""
+    lin = bt.get("linear")
+    if lin:
+        linear_str = (
+            f"\n| 线性趋势 +{lin['slope_pt_per_year']:.0f} 点/年 | "
+            f"R²={lin['r2']:.2f}（全 {lin['n']} 点）|"
         )
-        for r in tp:
-            drop = r["drop_pct"]
-            drop_str = f"{drop:+.0f}%" if abs(drop) > 0.1 else "—"
-            theory_str += (
-                f"| {r['ratio']:.2f} | {r['price']:.0f} | "
-                f"{drop_str} | {r['tag']} |\n"
-            )
-        theory_str = theory_str.rstrip()  # 去尾换行
+
+    # BPS 趋势图（base64 内联 PNG，不落盘；缺失则不嵌）
+    img_str = ""
+    png = bt.get("bps_trend_png")
+    if png:
+        img_str = (
+            "\n\n![BPS 趋势](data:image/png;base64,"
+            f"{png} \"{bt.get('_img_date', '')}\")"
+        )
 
     return (
-        f"趋势线：ln(PBS) = a + b×t   R²={r2:.2f}   "
-        f"底部抬升率 {annual:+.1f}%   基于 {n} 个历史低点（±{bt['window']} 日窗口）\n"
+        f"趋势线：ln(BPS) = a + b×t   R²={r2:.2f}   "
+        f"年化增长率 {annual:+.1f}%   基于全量 {n} 个 BPS 点\n"
         f"\n"
         f"| 项目 | 值 |\n"
         f"|---|---|\n"
-        f"| 当前 PBS | {cur:.0f}（close/pb）|\n"
-        f"| 底部趋势线 PBS_fair | {trend:.0f} |\n"
-        f"| PBS_score（fair/now）| {score:.2f} — {score_tag} |{recent_str}"
-        f"{theory_str}"
+        f"| 当前 BPS | {cur:.0f}（close/pb）|\n"
+        f"| 净资产趋势线 BPS_fair | {trend:.0f} |"
+        f"{linear_str}"
+        f"{img_str}"
     )
 
 
 def _pb_compression_panel(rows: list) -> str:
     """PB 压缩空间 panel。
 
-    固定资产 B（=当前 PBS=close/pb），看不同 PB 分位情景对应的点位与跌幅。
+    固定资产 B（=当前 BPS=close/pb），看不同 PB 分位情景对应的点位与跌幅。
     回答交易者核心问题："资产已便宜，但估值还有多少杀跌空间"。
-    与 PBS 底部回归互补：PBS 看资产便宜不便宜，本面板看估值下行风险。
+    与 BPS 底部回归互补：BPS 看资产便宜不便宜，本面板看估值下行风险。
     """
     lines = [
         "| PB | 对应点位 | 跌幅 | 情景 |",
@@ -157,12 +183,38 @@ def _pb_compression_panel(rows: list) -> str:
     return "\n".join(lines)
 
 
+def _discount_coverage_panel(cov: dict) -> str:
+    """贴水覆盖性 panel：下季贴水年化 × 1 年 vs PB -1σ/-2σ 跌幅。
+
+    回答"持有吃贴水 1 年，能否扛住一次 PB 杀跌"。展期收益线性累计（保守口径）。
+    -1σ 是主判（常态杀跌，贴水应覆盖），-2σ 仅极端参考（黑天鹅级，不要求覆盖）。
+    与 Carry Score 覆盖因子同源，本面板给具体 margin 数值。
+    """
+    disc = cov["discount_annual"]
+    header = "| 持有年限 | 累计贴水 |"
+    sep = "|---|---|"
+    for s in cov["scenarios"]:
+        header += f" {s['label']}（跌{abs(s['drop_pct']):.0f}%） |"
+        sep += "---|"
+    lines = [header, sep]
+    for y in cov["years"]:
+        cum = disc * y
+        row = f"| {y} 年 | +{cum:.1f}% |"
+        for s in cov["scenarios"]:
+            margin = cum + s["drop_pct"]  # drop_pct 负值；≥0 即覆盖
+            tag = "✅ 已覆盖" if margin >= 0 else "❌ 未覆盖"
+            sign = "+" if margin >= 0 else ""
+            row += f" {tag} {sign}{margin:.1f}% |"
+        lines.append(row)
+    return "\n".join(lines)
+
+
 def _carry_score_panel(cs: dict, state: str) -> str:
     """IM Carry Score panel（滚贴水持有评分，满分 100）。
 
-    三因子：下季贴水年化(40) + PB 10y 分位(25) + PBS_score(25)。
+    三因子：下季贴水年化(40) + PB 10y 分位(25) + 1年贴水覆盖-1σ(25)。
     滚贴水≠价值投资：最怕高估值+低贴水+波动上升。Carry Score 量化"收益(贴水)+
-    安全(PB/PBS)"，区分极佳开仓/可持有观望/观望，并按持仓状态给具体建议。
+    安全(PB估值/贴水覆盖)"，区分极佳开仓/可持有观望/观望，并按持仓状态给具体建议。
     """
     total = cs["total"]
     band = cs["band"]
@@ -182,12 +234,13 @@ def _carry_score_panel(cs: dict, state: str) -> str:
         if pts == 15:
             return f"{v:.1f}% 30~60%（中性）"
         return f"{v:.1f}% ≥60%（偏贵）"
-    def _pbs_tag(v, pts):
+    def _coverage_tag(v, pts):
+        pct = v * 100
         if pts == 25:
-            return f"{v:.2f} >1.05（低于趋势，便宜）"
+            return f"{pct:.0f}% ≥100%（贴水覆盖 -1σ 下跌）"
         if pts == 15:
-            return f"{v:.2f} 附近趋势"
-        return f"{v:.2f} <0.85（明显高于趋势）"
+            return f"{pct:.0f}% 50~100%（部分覆盖）"
+        return f"{pct:.0f}% <50%（覆盖不足）"
 
     lines = [
         f"**总分 {total}/100 — {band_label}**   {suggestion}",
@@ -198,8 +251,8 @@ def _carry_score_panel(cs: dict, state: str) -> str:
         f"{cs['discount_value']:.1f}% | {_roll_tag(cs['discount_value'], cs['discount_pts'])} |",
         f"| PB 10y 分位 | {cs['pb_pts']}/25 | "
         f"{cs['pb_pct']:.1f}% | {_pb_tag(cs['pb_pct'], cs['pb_pts'])} |",
-        f"| PBS_score | {cs['pbs_pts']}/25 | "
-        f"{cs['pbs_score']:.2f} | {_pbs_tag(cs['pbs_score'], cs['pbs_pts'])} |",
+        f"| 1年贴水覆盖-1σ | {cs['coverage_pts']}/25 | "
+        f"{cs['coverage_ratio']*100:.0f}% | {_coverage_tag(cs['coverage_ratio'], cs['coverage_pts'])} |",
     ]
     return "\n".join(lines)
 
@@ -207,8 +260,8 @@ def _carry_score_panel(cs: dict, state: str) -> str:
 def _expected_return_panel(er: dict) -> str:
     """三因子预期收益 panel（PDF 杨康平框架：ROE + 分红 + 估值变动）。
 
-    展期收益（roll_yield = 期限结构斜率）单独看 status_line 和期货合约表的基差，
-    不作为多年复利收益的预测分量（曲线斜率会变化，难以长期预测）。
+    展期收益（roll_yield = 展期一次收益率，价格是否 back）单独看 status_line 和期货合约表的基差，
+    不作为多年复利收益的预测分量（期限结构会变化，难以长期预测）。
     """
     roe = er["roe_pct"]
     div = er["dividend_yield_pct"]
@@ -233,7 +286,7 @@ def _expected_return_panel(er: dict) -> str:
         f"**含估值回归 1 年预期**：`{er['annual_with_mean_reversion_pct']:+.1f}%` "
         f"（假设 PE 1 年内回到 10 年中位数）",
         "",
-        "> 展期收益（roll_yield）见状态行和期货合约表的基差；曲线斜率会变化，不计入多年复利预测。",
+        "> 展期收益（roll_yield）见状态行和期货合约表的基差；期限结构会变化，不计入多年复利预测。",
     ]
     return "\n".join(lines)
 
@@ -274,10 +327,17 @@ def generate_report(
         "## ⚡ 信号",
         format_signals_section(signals, state),
         "",
-        "## 估值面板",
-        _valuation_table(metrics),
-        "",
     ]
+
+    # 空仓状态：开仓信号检查（PE/PB 分位区间 + 展期收益，三条件是否达标）
+    if state == "empty":
+        lines.append("### 开仓信号检查")
+        lines.append(_entry_check_panel(metrics))
+        lines.append("")
+
+    lines.append("## 估值面板")
+    lines.append(_valuation_table(metrics))
+    lines.append("")
 
     div = metrics.get("pe_pb_divergence", 0)
     if div > 10:
@@ -297,18 +357,21 @@ def generate_report(
         lines.append(f"PE-PB 背离：{div:+.1f}pp（基本一致）")
     lines.append("")
 
+    # PB 分位情景点位（主体，可操作：跌幅驱动贴水覆盖判断；底部回归趋势图挪附录）
     bt = metrics.get("bottom_trend")
     if bt:
-        lines.append("## 底部点位回归（PBS = close/pb，2014-至今对数趋势）")
-        lines.append(_bottom_trend_panel(bt))
-        lines.append("")
-
-        # PB 压缩空间与底部回归同源（都基于 close/pb），紧跟其后展示
         pb_rows = bt.get("pb_compression")
         if pb_rows:
             lines.append("## PB 分位情景点位")
             lines.append(_pb_compression_panel(pb_rows))
             lines.append("")
+
+    # 贴水覆盖性：PB 杀跌跌幅 × 下季贴水年限（跌幅来自 pb_compression）
+    cov = metrics.get("discount_coverage")
+    if cov:
+        lines.append("## 贴水覆盖性（下季贴水 × 1 年 vs PB 杀跌）")
+        lines.append(_discount_coverage_panel(cov))
+        lines.append("")
 
     # IM Carry Score（滚贴水持有评分）— 需要持仓状态给建议
     cs = metrics.get("carry_score")
@@ -326,11 +389,6 @@ def generate_report(
     lines.append("## 期货合约（IM 当日）")
     lines.append(_contracts_table(metrics))
     lines.append("")
-
-    main_pct = metrics.get("main_continuous_discount_pct")
-    if main_pct is not None:
-        lines.append(f"主力连续贴水分位：{main_pct:.1f}%（近2年）")
-        lines.append("")
 
     opt = metrics.get("otm_call")
     if opt:
@@ -360,6 +418,12 @@ def generate_report(
                      f"当前 {close:.0f}，浮盈 {pnl_pct:+.1f}%")
         lines.append("")
 
+    # 附录：BPS 底部回归（净资产底缓慢抬升的方法论证明，非每次决策的操作信号）
+    if bt:
+        lines.append("## 附录：BPS 底部回归（净资产底抬升证明）")
+        lines.append(_bottom_trend_panel(bt))
+        lines.append("")
+
     return "\n".join(lines)
 
 
@@ -368,7 +432,7 @@ def render_status_line(
     signal_type: str, roll_yield: float,
 ) -> str:
     """status 子命令一行输出。roll_yield 由调用方通过 _extract_signal_metrics 算好
-    （= 下月年化贴水 - 当月年化贴水 = 期限结构斜率）。emoji 直接从 signal_type 映射，
+    （= 展期一次收益率 = (当月价 − 下月价)/当月价，价格是否 back）。emoji 直接从 signal_type 映射，
     避免在这里重复判断阈值（升水/switch 状态也能正确反映）。
     """
     state = position.status

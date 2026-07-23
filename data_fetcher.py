@@ -179,7 +179,6 @@ def build_valuation_row(row: dict) -> dict:
     return {
         "date": str(row["date"])[:10],
         "close": float(row["close"]),
-        "pe_static": float(row.get("pe_static", 0)),
         "pe_ttm": float(row.get("pe_ttm", 0)),
         "pb": float(row.get("pb", 0)),
         "fetched_at": datetime.now().isoformat(timespec="seconds"),
@@ -195,7 +194,6 @@ def fetch_valuation() -> list[dict]:
 
     pe_df = pe_raw.rename(columns={
         "日期": "date", "指数": "close",
-        "静态市盈率": "pe_static",
         "滚动市盈率": "pe_ttm",
     })
     pb_df = pb_raw.rename(columns={
@@ -210,48 +208,6 @@ def fetch_valuation() -> list[dict]:
         try:
             rows.append(build_valuation_row(r.to_dict()))
         except (ValueError, TypeError):
-            continue
-    return rows
-
-
-def fetch_main_continuous(
-    spot_by_date: dict[str, float], ref_date: date
-) -> list[dict]:
-    """拉主力连续 IM0 全历史。
-
-    spot_by_date 是 {date_str: spot_close} 映射（来自 daily_valuation 表），
-    每行用对应日期的现货收盘算基差。缺失日期的 basis = None（估值数据未覆盖的
-    假日/数据源缺失），后续分位计算会过滤掉。
-
-    主力连续无交割日，days_to_expire/expire_date 留空，annualized_discount=None。
-    """
-    df = retry(lambda: ak.futures_main_sina(symbol="IM0"))
-    if df is None:
-        return []
-
-    rows = []
-    for _, r in df.iterrows():
-        try:
-            close = float(r["收盘价"])
-            d = str(r["日期"])[:10]
-            spot = spot_by_date.get(d)
-            basis = compute_basis(close, spot) if spot is not None else None
-            rows.append({
-                "date": d,
-                "symbol": "IM0",
-                "name": "主力连续",
-                "contract_type": "主力",
-                "close": close,
-                "settle": close,  # 新浪主力连续无 settle，用 close
-                "volume": float(r.get("成交量", 0)),
-                "open_interest": float(r.get("持仓量", 0)),
-                "expire_date": None,
-                "days_to_expire": None,
-                "basis": basis,
-                "annualized_discount": None,  # 主力连续无交割日，无法年化
-                "fetched_at": datetime.now().isoformat(timespec="seconds"),
-            })
-        except (ValueError, TypeError, KeyError):
             continue
     return rows
 

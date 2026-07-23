@@ -6,7 +6,7 @@ from datetime import date
 import pandas as pd
 
 from data_fetcher import (
-    retry, fetch_valuation, fetch_main_continuous,
+    retry, fetch_valuation,
     fetch_daily_contracts, build_valuation_row,
 )
 
@@ -41,7 +41,7 @@ class TestBuildValuationRow(unittest.TestCase):
         """merged row（PE + PB 已 join）构造 valuation 记录"""
         row = build_valuation_row({
             "date": "2026-07-10", "close": 8198.31,
-            "pe_static": 35.77, "pe_ttm": 34.57,
+            "pe_ttm": 34.57,
             "pb": 2.58,
         })
         self.assertEqual(row["date"], "2026-07-10")
@@ -71,34 +71,6 @@ class TestFetchValuation(unittest.TestCase):
         self.assertEqual(len(rows), 2)
         self.assertAlmostEqual(rows[-1]["pe_ttm"], 34.57)
         self.assertAlmostEqual(rows[-1]["pb"], 2.58)
-
-
-class TestFetchMainContinuous(unittest.TestCase):
-    @patch("data_fetcher.ak")
-    def test_returns_im0_rows(self, mock_ak):
-        mock_ak.futures_main_sina.return_value = pd.DataFrame([
-            {"日期": "2026-07-10", "收盘价": 8150, "开盘价": 8100,
-             "最高价": 8200, "最低价": 8050, "成交量": 100000, "持仓量": 50000},
-        ])
-        rows = fetch_main_continuous(
-            spot_by_date={"2026-07-10": 8198.31}, ref_date=date(2026, 7, 10))
-        self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0]["symbol"], "IM0")
-        self.assertEqual(rows[0]["contract_type"], "主力")
-        # 基差用对应日期的现货算，不是 None
-        self.assertAlmostEqual(rows[0]["basis"], 8150 - 8198.31)
-
-    @patch("data_fetcher.ak")
-    def test_missing_spot_yields_none_basis(self, mock_ak):
-        """现货映射缺失该日期时，basis=None（后续分位计算过滤掉）"""
-        mock_ak.futures_main_sina.return_value = pd.DataFrame([
-            {"日期": "2026-07-10", "收盘价": 8150, "开盘价": 8100,
-             "最高价": 8200, "最低价": 8050, "成交量": 100000, "持仓量": 50000},
-        ])
-        rows = fetch_main_continuous(
-            spot_by_date={}, ref_date=date(2026, 7, 10))
-        self.assertEqual(len(rows), 1)
-        self.assertIsNone(rows[0]["basis"])
 
 
 class TestFetchDailyContracts(unittest.TestCase):
