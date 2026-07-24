@@ -152,20 +152,24 @@ def _reduce_pe_signal(metrics: dict, t: Thresholds) -> Signal | None:
 
 
 def _reduce_basis_signal(metrics: dict, t: Thresholds) -> Signal | None:
-    """退出条件 2：展期收益 ≤ 0（价格 contango 或平水）。
+    """退出条件 2：展期双段同时 contango（当月→下月 <0 且 当月→下季 <0）。
 
-    roll_yield = (当月价 − 下月价)/当月价 = 展期一次收益率。
-    ≤ 0 表示下月不再比当月便宜（价格 contango/平水），展期吃贴水策略前提失效。
+    roll_yield = (当月价 − 下月价)/当月价（月度展期段），
+    roll_yield_q = (当月价 − 下季价)/当月价（当月→下季展期段）。
+    两段均 <0 表示当月比下月、下季都便宜（双段 contango），期限结构彻底反转，
+    展期吃贴水策略前提失效。单段 contango 可能只是交割噪音，不离场。
     """
     roll = metrics["roll_yield"]
-    if roll <= 0:
+    roll_q = metrics["roll_yield_q"]
+    if roll < 0 and roll_q < 0:
         return Signal(
             type="reduce", priority=1,
-            condition=(f"展期收益 {roll:+.1f}% ≤ 0%（价格 contango/平水），"
+            condition=(f"展期双段失效：当月→下月 {roll:+.1f}% 且 "
+                       f"当月→下季 {roll_q:+.1f}% 均<0（双段 contango），"
                        f"展期吃贴水策略前提失效"),
-            current={"roll_yield": roll},
+            current={"roll_yield": roll, "roll_yield_q": roll_q},
             threshold={"exit_roll_yield": 0},
-            suggestion="平仓——价格 contango 状态下展期会反向亏钱",
+            suggestion="平仓——双段 contango 状态下展期会反向亏钱",
         )
     return None
 
@@ -200,14 +204,17 @@ def _hold_signal(metrics: dict, t: Thresholds) -> Signal | None:
     pe = metrics["pe_ttm_pct_10y"]
     days = metrics["current_month_days"]
     roll = metrics["roll_yield"]
-    if pe <= t.warn_reduce_pe_pct and days >= t.switch_days and roll > 0:
+    roll_q = metrics["roll_yield_q"]
+    basis_failed = roll < 0 and roll_q < 0  # 双段 contango = 离场条件，hold 的否定
+    if (pe <= t.warn_reduce_pe_pct and days >= t.switch_days
+            and not basis_failed):
         return Signal(
             type="hold", priority=5,
             condition=(f"PE_TTM {pe:.1f}% ≤ {t.warn_reduce_pe_pct}% 且 "
                        f"剩余 {days} 天 ≥ {t.switch_days} 且 "
-                       f"展期收益 {roll:+.1f}% > 0"),
+                       f"展期未双段失效（月{roll:+.1f}%/季{roll_q:+.1f}%）"),
             current={"pe_ttm_pct_10y": pe, "days_to_expire": days,
-                     "roll_yield": roll},
+                     "roll_yield": roll, "roll_yield_q": roll_q},
             threshold={"warn_reduce_pe_pct": t.warn_reduce_pe_pct, "switch_days": t.switch_days},
             suggestion="继续持有吃贴水",
         )

@@ -103,14 +103,16 @@ def _entry_check_panel(metrics: dict) -> str:
 
 
 def _exit_check_panel(metrics: dict) -> str:
-    """平仓信号检查：PE 过高 + 展期失效，任一触发即平仓。
+    """平仓信号检查：PE 过高 + 展期双段失效，任一触发即平仓。
 
-    平仓 = PE>85% 或 roll_yield≤0 两条件任一满足（与开仓的"三条件全满足"相反）。
+    平仓 = PE>85% 或（当月→下月<0 且 当月→下季<0）。展期需双段同时 contango
+    才算失效（单段 contango 可能只是交割噪音）；与开仓的"三条件全满足"相反。
     持仓状态下无论信号都展示，让平仓触发条件是否满足一目了然。
     """
     t = Thresholds()
     pe = metrics["pe_ttm_pct"].get("10y", {}).get("pct")
-    roll = metrics.get("roll_yield", 0.0)
+    roll = metrics.get("roll_yield", 0.0)      # 当月→下月
+    roll_q = metrics.get("roll_yield_q", 0.0)  # 当月→下季
 
     def _zone(v):
         if v is None:
@@ -122,24 +124,26 @@ def _exit_check_panel(metrics: dict) -> str:
         return "安全区"
 
     pe_high = pe is not None and pe > t.reduce_pe_pct
-    roll_bad = roll <= 0
+    basis_bad = roll < 0 and roll_q < 0  # 双段 contango 才算展期失效
     pe_str = f"{pe:.1f}%（{_zone(pe)}）" if pe is not None else "N/A"
-    roll_str = (f"{roll:+.1f}%（价格 contango/平水，展期失效）" if roll_bad
-                else f"{roll:+.1f}%（价格 back，展期健康）")
+    seg = lambda v: f"{v:+.1f}%（contango）" if v < 0 else f"{v:+.1f}%（back）"
+
     triggers = []
     if pe_high:
         triggers.append("PE 过高")
-    if roll_bad:
-        triggers.append("展期失效")
+    if basis_bad:
+        triggers.append("展期双段失效")
     verdict = ("⚠️ 触发平仓信号（" + " + ".join(triggers) + "）" if triggers
-               else "✅ 未触发平仓（2/2 安全，继续持有）")
+               else "✅ 未触发平仓（继续持有）")
 
     return (
         "| 条件 | 当前 | 门槛 | 触发 |\n"
         "|---|---|---|---|\n"
         f"| PE_TTM 10y 分位 | {pe_str} | >{t.reduce_pe_pct:.0f}% | {'✅' if pe_high else '✗'} |\n"
-        f"| 展期收益 | {roll_str} | ≤0 | {'✅' if roll_bad else '✗'} |\n"
-        f"\n**{verdict}**"
+        f"| 展期 当月→下月 | {seg(roll)} | <0 | {'✅' if roll < 0 else '✗'} |\n"
+        f"| 展期 当月→下季 | {seg(roll_q)} | <0 | {'✅' if roll_q < 0 else '✗'} |\n"
+        f"\n**{verdict}**\n"
+        f"> 展期需双段均<0（双段 contango）才算失效；单段 contango 视为噪音不离场"
     )
 
 
@@ -412,10 +416,10 @@ def generate_report(
 
 def render_status_line(
     report_date: str, position: Position, metrics: dict,
-    signal_type: str, roll_yield: float,
+    signal_type: str, roll_yield: float, roll_yield_q: float,
 ) -> str:
-    """status 子命令一行输出。roll_yield 由调用方通过 _extract_signal_metrics 算好
-    （= 展期一次收益率 = (当月价 − 下月价)/当月价，价格是否 back）。emoji 直接从 signal_type 映射，
+    """status 子命令一行输出。roll_yield（当月→下月）/roll_yield_q（当月→下季）由调用方通过
+    _extract_signal_metrics 算好（展期一次收益率，价格是否 back）。emoji 直接从 signal_type 映射，
     避免在这里重复判断阈值（升水/switch 状态也能正确反映）。
     """
     state = position.status
@@ -427,4 +431,4 @@ def render_status_line(
 
     return (f"{report_date} | {state_cn} | {close:.0f}点 | "
             f"PE_TTM {pe:.1f} ({pe_pct:.1f}%{emoji}) | "
-            f"展期收益 {roll_yield:+.1f}% | 信号: {signal_type}")
+            f"展期 月{roll_yield:+.1f}%/季{roll_yield_q:+.1f}% | 信号: {signal_type}")

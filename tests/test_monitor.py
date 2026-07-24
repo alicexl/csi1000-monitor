@@ -39,19 +39,41 @@ class TestExtractSignalMetrics(unittest.TestCase):
         }
 
     def test_returns_roll_yield_and_discounts(self):
-        """当月 + 下月都有 → 返回 d_near / d_far / roll_yield / days。
-        roll_yield = (当月价 − 下月价)/当月价（价格 back 判定，与年化贴水无关）"""
+        """当月 + 下月 + 下季 → 返回 d_near/d_far/roll_yield/roll_yield_q/days。
+        roll_yield = (当月−下月)/当月，roll_yield_q = (当月−下季)/当月（价格 back 判定）"""
         self.metrics["contracts"] = [
             _contract("当月", 5.0, 20, close=7000),
             _contract("下月", 7.0, 50, close=6860),
+            _contract("下季", 9.7, 150, close=6790),
         ]
         out = _extract_signal_metrics(self.metrics)
         self.assertAlmostEqual(out["current_month_discount"], 5.0)
         self.assertAlmostEqual(out["next_month_discount"], 7.0)
         self.assertEqual(out["current_month_days"], 20)
-        # roll_yield = (7000 − 6860)/7000 = 2.0%（下月更便宜 = 价格 back）
-        # 注：年化贴水下月 7% > 当月 5% 只是巧合同号，roll_yield 只看价格
+        # roll_yield = (7000 − 6860)/7000 = 2.0%
         self.assertAlmostEqual(out["roll_yield"], 2.0)
+        # roll_yield_q = (7000 − 6790)/7000 = 3.0%（下季更便宜 = back）
+        self.assertAlmostEqual(out["roll_yield_q"], 3.0)
+
+    def test_roll_yield_q_missing_next_quarter(self):
+        """缺下季合约 → roll_yield_q = 0（保守不触发 <0）"""
+        self.metrics["contracts"] = [
+            _contract("当月", 5.0, 20, close=7000),
+            _contract("下月", 7.0, 50, close=6860),
+        ]
+        out = _extract_signal_metrics(self.metrics)
+        self.assertEqual(out["roll_yield_q"], 0.0)
+
+    def test_roll_yield_q_negative_when_contango(self):
+        """下季比当月贵 → roll_yield_q < 0（远月 contango）"""
+        self.metrics["contracts"] = [
+            _contract("当月", 5.0, 20, close=7000),
+            _contract("下月", 7.0, 50, close=6860),
+            _contract("下季", -3.0, 150, close=7070),  # 下季更贵
+        ]
+        out = _extract_signal_metrics(self.metrics)
+        # (7000 − 7070)/7000 = -1.0%
+        self.assertAlmostEqual(out["roll_yield_q"], -1.0)
 
     def test_roll_yield_ignores_annualized_slope(self):
         """关键：年化贴水斜率 ≤ 0 但价格仍 back → roll_yield > 0（不误判异常）。

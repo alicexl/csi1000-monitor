@@ -8,9 +8,10 @@ EMPTY = "empty"
 HOLDING = "holding"
 
 
-def make_metrics(pe_pct=50, roll_yield=1.0, days=10, pb_pct=40):
-    """构造 signals 输入。roll_yield = 展期一次收益率 = (当月价−下月价)/当月价（价格 back 判定）。
-    默认 roll_yield = 1.0 > 0（健康 backwardation）。
+def make_metrics(pe_pct=50, roll_yield=1.0, days=10, pb_pct=40, roll_yield_q=1.0):
+    """构造 signals 输入。roll_yield = 当月→下月展期段 = (当月价−下月价)/当月价（价格 back 判定）。
+    roll_yield_q = 当月→下季展期段 = (当月价−下季价)/当月价（离场双段判定用）。
+    默认两者 1.0 > 0（健康 backwardation）。
     pb_pct 默认满足入场（PB 40<50），保证旧测试不回归。
     current/next_month_discount 仅作展示占位，不参与信号判断。"""
     return {
@@ -20,6 +21,7 @@ def make_metrics(pe_pct=50, roll_yield=1.0, days=10, pb_pct=40):
         "current_month_days": days,
         "next_month_discount": 7,      # 展示占位
         "roll_yield": roll_yield,
+        "roll_yield_q": roll_yield_q,
     }
 
 
@@ -159,16 +161,16 @@ class TestHoldingState(unittest.TestCase):
         self.assertNotIn("reduce", types)
 
     def test_reduce_basis_signal_zero(self):
-        """展期=0（平水）→ reduce（展期失效）"""
+        """平水（roll=0）单段，远月 back（roll_q>0）→ 未双段失效，不触发 reduce"""
         sigs = evaluate(HOLDING, make_metrics(pe_pct=50, roll_yield=0), self.t)
         types = [s.type for s in sigs]
-        self.assertIn("reduce", types)
+        self.assertNotIn("reduce", types)
 
     def test_reduce_basis_signal_negative(self):
-        """价格 contango（roll_yield<0）→ reduce"""
+        """单段 contango（roll<0）但远月 back（roll_q>0）→ 未双段失效，不触发 reduce"""
         sigs = evaluate(HOLDING, make_metrics(pe_pct=50, roll_yield=-1.0), self.t)
         types = [s.type for s in sigs]
-        self.assertIn("reduce", types)
+        self.assertNotIn("reduce", types)
 
     def test_reduce_basis_not_trigger_when_curve_healthy(self):
         """价格 back（roll_yield > 0）→ 不触发 reduce_basis"""
@@ -177,14 +179,15 @@ class TestHoldingState(unittest.TestCase):
         self.assertEqual(len(reduce_sigs), 0)
 
     def test_reduce_pe_and_basis_coexist(self):
-        """PE>85 且 contango（roll_yield≤0）→ 两个 reduce 都触发"""
-        sigs = evaluate(HOLDING, make_metrics(pe_pct=90, roll_yield=-1.0), self.t)
+        """PE>85 且 双段 contango → reduce_pe + reduce_basis 都触发"""
+        sigs = evaluate(HOLDING, make_metrics(
+            pe_pct=90, roll_yield=-1.0, roll_yield_q=-1.0), self.t)
         reduce_sigs = [s for s in sigs if s.type == "reduce"]
         self.assertEqual(len(reduce_sigs), 2)
-        # 一个 condition 含 PE，一个含展期收益
+        # 一个 condition 含 PE，一个含展期双段失效
         conds = " | ".join(s.condition for s in reduce_sigs)
         self.assertIn("PE_TTM", conds)
-        self.assertIn("展期收益", conds)
+        self.assertIn("展期双段失效", conds)
 
     def test_warn_reduce(self):
         """PE 在 75-85% → warn_reduce"""
@@ -210,11 +213,20 @@ class TestHoldingState(unittest.TestCase):
         types = [s.type for s in sigs]
         self.assertIn("hold", types)
 
-    def test_hold_not_trigger_on_flat(self):
-        """平水状态（roll_yield=0）→ 不触发 hold（已被 reduce_basis 占据）"""
+    def test_hold_on_flat_when_far_back(self):
+        """平水（roll=0）但远月 back（roll_q>0）→ hold（中间态，未双段失效继续持有）"""
         sigs = evaluate(HOLDING, make_metrics(pe_pct=50, roll_yield=0, days=20), self.t)
         types = [s.type for s in sigs]
-        self.assertNotIn("hold", types)
+        self.assertIn("hold", types)
+        self.assertNotIn("reduce", types)
+
+    def test_hold_when_near_contango_far_back(self):
+        """近月 contango（roll<0）但远月 back（roll_q>0）→ hold（中间态核心）"""
+        sigs = evaluate(HOLDING, make_metrics(
+            pe_pct=50, roll_yield=-1.0, roll_yield_q=1.0, days=20), self.t)
+        types = [s.type for s in sigs]
+        self.assertIn("hold", types)
+        self.assertNotIn("reduce", types)
 
     def test_reduce_pe_and_switch_can_coexist(self):
         """PE>85 且 天数<7 → reduce + switch 同时触发"""
@@ -224,12 +236,11 @@ class TestHoldingState(unittest.TestCase):
         self.assertIn("switch", types)
 
     # ─── roll_yield 口径验证（2026-07-23 重构：策略判断基于价格是否 back）───
-    def test_reduce_basis_when_contango(self):
-        """价格 contango（下月比当月贵，roll_yield<0）→ reduce_basis 触发"""
+    def test_reduce_basis_when_double_contango(self):
+        """双段 contango（roll<0 且 roll_q<0）→ reduce_basis 触发"""
         sigs = evaluate(HOLDING, make_metrics(
-            pe_pct=50, roll_yield=-1.0, days=20), self.t)
-        types = [s.type for s in sigs]
-        self.assertIn("reduce", types)
+            pe_pct=50, roll_yield=-1.0, roll_yield_q=-1.0, days=20), self.t)
+        self.assertIn("reduce", [s.type for s in sigs])
 
     def test_no_reduce_when_curve_back(self):
         """价格 back（roll_yield > 0）→ 不触发 reduce_basis"""
@@ -237,12 +248,11 @@ class TestHoldingState(unittest.TestCase):
         reduce_sigs = [s for s in sigs if s.type == "reduce"]
         self.assertEqual(len(reduce_sigs), 0)
 
-    def test_reduce_when_curve_flat(self):
-        """价格平水（roll_yield = 0）→ 触发 reduce_basis"""
+    def test_no_reduce_when_flat_single_segment(self):
+        """平水（roll=0）单段，远月 back → 不触发 reduce（未双段失效）"""
         sigs = evaluate(HOLDING, make_metrics(
             pe_pct=50, roll_yield=0, days=20), self.t)
-        types = [s.type for s in sigs]
-        self.assertIn("reduce", types)
+        self.assertNotIn("reduce", [s.type for s in sigs])
 
 
 class TestPriority(unittest.TestCase):
@@ -256,8 +266,9 @@ class TestPriority(unittest.TestCase):
         self.assertEqual(top.type, "reduce")
 
     def test_reduce_basis_highest(self):
-        """contango（roll_yield<0）也是 priority=1"""
-        sigs = evaluate(HOLDING, make_metrics(pe_pct=50, roll_yield=-1.0, days=20), self.t)
+        """双段 contango（roll<0 且 roll_q<0）也是 priority=1"""
+        sigs = evaluate(HOLDING, make_metrics(
+            pe_pct=50, roll_yield=-1.0, roll_yield_q=-1.0, days=20), self.t)
         top = min(sigs, key=lambda s: s.priority)
         self.assertEqual(top.type, "reduce")
         self.assertEqual(top.priority, 1)
@@ -304,8 +315,9 @@ class TestConflictFiltering(unittest.TestCase):
         self.assertNotIn("hold", types)
 
     def test_reduce_basis_filters_hold(self):
-        """持仓 + reduce_basis 触发 → hold 被过滤掉"""
-        sigs = evaluate(HOLDING, make_metrics(pe_pct=50, roll_yield=-1.0, days=20), self.t)
+        """持仓 + 双段 contango → reduce_basis 触发过滤 hold"""
+        sigs = evaluate(HOLDING, make_metrics(
+            pe_pct=50, roll_yield=-1.0, roll_yield_q=-1.0, days=20), self.t)
         types = [s.type for s in sigs]
         self.assertIn("reduce", types)
         self.assertNotIn("hold", types)

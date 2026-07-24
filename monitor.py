@@ -439,15 +439,23 @@ def _extract_signal_metrics(metrics: dict) -> dict:
         (c for c in contracts if c["contract_type"] == "当月"), None)
     next_month = next(
         (c for c in contracts if c["contract_type"] == "下月"), None)
+    next_quarter = next(
+        (c for c in contracts if c["contract_type"] == "下季"), None)
     d_near = cur_month["annualized_discount"] if cur_month else 0
     d_far = next_month["annualized_discount"] if next_month else 0
-    # roll_yield = 展期一次收益率（价格 back 判定）：当月价 − 下月价 > 0 即 backwardation
+    # roll_yield = 展期一次收益率（当月→下月，价格 back 判定）：当月价 − 下月价 > 0 即 backwardation
     near_price = cur_month["close"] if cur_month else 0
     far_price = next_month["close"] if next_month else 0
     if cur_month and next_month and near_price > 0:
         roll_yield = (near_price - far_price) / near_price * 100
     else:
         roll_yield = 0.0  # 缺当月/下月 → 无法展期，判 ≤0 异常
+    # roll_yield_q = 当月→下季展期段（离场双段判定用，与 roll_yield 同以当月价为锚）
+    quarter_price = next_quarter["close"] if next_quarter else 0
+    if cur_month and next_quarter and near_price > 0:
+        roll_yield_q = (near_price - quarter_price) / near_price * 100
+    else:
+        roll_yield_q = 0.0  # 缺下季 → 保守 0（不触发 <0，不离场）
     return {
         "pe_ttm_pct_10y": metrics["pe_ttm_pct"].get("10y", {}).get("pct")
                           or 100,  # 样本不足（None）→ 100，保守 wait 不入场
@@ -456,6 +464,7 @@ def _extract_signal_metrics(metrics: dict) -> dict:
         "current_month_days": cur_month["days_to_expire"] if cur_month else 999,
         "next_month_discount": d_far,
         "roll_yield": roll_yield,
+        "roll_yield_q": roll_yield_q,
     }
 
 
@@ -606,6 +615,12 @@ def _build_metrics(conn) -> dict:
         return {}
     history = query_valuation_history(conn)
     contracts = query_contracts_by_date(conn, latest["date"])
+    if not contracts:
+        # 估值源（乐咕日更）可能领先 CFFEX（盘后发布）一天：latest valuation date
+        # 晚于最新合约日期时回退到最新有合约的日期（展期结构不因一日失真）
+        row = conn.execute("SELECT MAX(date) FROM daily_contracts").fetchone()
+        if row and row[0]:
+            contracts = query_contracts_by_date(conn, row[0])
 
     # 多区间分位
     pe_ttm_pct = compute_pct_for_windows(history, latest, "pe_ttm", PCT_WINDOWS)
@@ -652,8 +667,10 @@ def _build_metrics(conn) -> dict:
     except Exception:
         metrics["otm_call"] = None
 
-    # 展期收益 roll_yield（= 展期一次收益率，价格是否 back）供开仓检查面板共用
-    metrics["roll_yield"] = _extract_signal_metrics(metrics)["roll_yield"]
+    # 展期收益 roll_yield（当月→下月）/roll_yield_q（当月→下季）供开仓/平仓检查面板共用
+    _sig = _extract_signal_metrics(metrics)
+    metrics["roll_yield"] = _sig["roll_yield"]
+    metrics["roll_yield_q"] = _sig["roll_yield_q"]
     return metrics
 
 
@@ -705,7 +722,7 @@ def cmd_status() -> int:
     sig_type = top.type if top else "none"
 
     print(render_status_line(metrics["date"], position, metrics, sig_type,
-                             sig_metrics["roll_yield"]))
+                             sig_metrics["roll_yield"], sig_metrics["roll_yield_q"]))
     conn.close()
     return 0
 

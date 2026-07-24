@@ -95,19 +95,20 @@ class TestStatusLine(unittest.TestCase):
     def test_one_line_output(self):
         pos = make_position("empty")
         metrics = make_metrics()
-        line = render_status_line("2026-07-10", pos, metrics, "wait", 2.5)
+        line = render_status_line("2026-07-10", pos, metrics, "wait", 2.5, 3.0)
         self.assertIn("2026-07-10", line)
         self.assertIn("空仓", line)
         self.assertIn("8198", line)
         self.assertIn("wait", line)
-        self.assertIn("展期收益", line)
+        self.assertIn("展期", line)
 
-    def test_status_line_uses_roll_yield_label(self):
-        """status_line 应显示'展期收益'标签（roll_yield = 展期一次收益率，价格是否 back）"""
+    def test_status_line_shows_both_segments(self):
+        """status_line 应同时显示月段/季段展期（双段 roll_yield）"""
         pos = make_position("empty")
         metrics = make_metrics()
-        line = render_status_line("2026-07-10", pos, metrics, "wait", 2.5)
-        self.assertIn("展期收益", line)
+        line = render_status_line("2026-07-10", pos, metrics, "wait", 2.5, 3.0)
+        self.assertIn("展期 月", line)
+        self.assertIn("/季", line)
         self.assertNotIn("下月贴水", line)
 
     def test_emoji_from_signal_type(self):
@@ -115,20 +116,20 @@ class TestStatusLine(unittest.TestCase):
         pos = make_position("holding")
         metrics = make_metrics()
         # reduce → ⚠
-        line = render_status_line("2026-07-10", pos, metrics, "reduce", -0.5)
+        line = render_status_line("2026-07-10", pos, metrics, "reduce", -0.5, -1.0)
         self.assertIn("⚠", line)
         # switch → 🔄
-        line = render_status_line("2026-07-10", pos, metrics, "switch", 5.0)
+        line = render_status_line("2026-07-10", pos, metrics, "switch", 5.0, 5.0)
         self.assertIn("🔄", line)
         # hold → ✅
-        line = render_status_line("2026-07-10", pos, metrics, "hold", 5.0)
+        line = render_status_line("2026-07-10", pos, metrics, "hold", 5.0, 5.0)
         self.assertIn("✅", line)
         # entry → 🟢
         pos_empty = make_position("empty")
-        line = render_status_line("2026-07-10", pos_empty, metrics, "entry", 5.0)
+        line = render_status_line("2026-07-10", pos_empty, metrics, "entry", 5.0, 5.0)
         self.assertIn("🟢", line)
         # wait → 空 emoji
-        line = render_status_line("2026-07-10", pos_empty, metrics, "wait", 5.0)
+        line = render_status_line("2026-07-10", pos_empty, metrics, "wait", 5.0, 5.0)
         self.assertNotIn("⚠", line)
         self.assertNotIn("🟢", line)
 
@@ -233,16 +234,17 @@ class TestEntryCheckPanel(unittest.TestCase):
 
 
 class TestExitCheckPanel(unittest.TestCase):
-    """平仓信号检查：PE>85% 或 roll_yield≤0，任一触发即平仓。"""
+    """平仓信号检查：PE>85% 或 展期双段<0（当月→下月<0 且 当月→下季<0），任一触发即平仓。"""
 
-    def _m(self, pe_pct, roll):
+    def _m(self, pe_pct, roll, roll_q=2.0):
         return {
             "pe_ttm_pct": {"10y": {"pct": pe_pct, "n": 2400}},
             "roll_yield": roll,
+            "roll_yield_q": roll_q,
         }
 
     def test_safe_no_exit(self):
-        """PE 72%（安全区）+ roll>0 → 未触发平仓，继续持有"""
+        """PE 72%（安全区）+ 双段 back → 未触发平仓，继续持有"""
         out = _exit_check_panel(self._m(72, 2.0))
         self.assertIn("未触发平仓", out)
         self.assertIn("安全区", out)
@@ -254,16 +256,22 @@ class TestExitCheckPanel(unittest.TestCase):
         self.assertIn("PE 过高", out)
         self.assertIn("平仓区", out)
 
-    def test_roll_bad_triggers_exit(self):
-        """展期 contango（roll≤0）→ 触发平仓（展期失效）"""
-        out = _exit_check_panel(self._m(72, -1.0))
+    def test_double_contango_triggers_exit(self):
+        """双段 contango（roll<0 且 roll_q<0）→ 触发平仓（展期双段失效）"""
+        out = _exit_check_panel(self._m(72, -1.0, -1.0))
         self.assertIn("触发平仓信号", out)
-        self.assertIn("展期失效", out)
+        self.assertIn("展期双段失效", out)
+
+    def test_single_contango_no_exit(self):
+        """单段 contango（roll<0 但 roll_q>0）→ 未触发（远月仍 back，未双段失效）"""
+        out = _exit_check_panel(self._m(72, -1.0, 2.0))
+        self.assertIn("未触发平仓", out)
 
     def test_in_full_report_holding_state_only(self):
         """持仓报告含平仓信号检查；空仓不展示"""
         metrics = make_metrics()
         metrics["roll_yield"] = 2.0
+        metrics["roll_yield_q"] = 2.0
         report = generate_report("2026-07-10", make_position("holding"), metrics, [])
         self.assertIn("平仓信号检查", report)
         report_empty = generate_report(
