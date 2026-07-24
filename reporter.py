@@ -2,7 +2,7 @@
 from __future__ import annotations
 from typing import Any
 
-from signals import Signal, Position, carry_suggestion, Thresholds
+from signals import Signal, Position, Thresholds
 
 STATE_LABEL = {
     "empty": "🟡 空仓等待",
@@ -229,7 +229,7 @@ def _discount_coverage_panel(cov: dict) -> str:
 
     回答"持有吃贴水 1 年，能否扛住一次 PB 杀跌"。展期收益线性累计（保守口径）。
     -1σ 是主判（常态杀跌，贴水应覆盖），-2σ 仅极端参考（黑天鹅级，不要求覆盖）。
-    与 Carry Score 覆盖因子同源，本面板给具体 margin 数值。
+    本面板给具体 margin 数值。
     """
     disc = cov["discount_annual"]
     header = "| 持有年限 | 累计贴水 |"
@@ -247,54 +247,6 @@ def _discount_coverage_panel(cov: dict) -> str:
             sign = "+" if margin >= 0 else ""
             row += f" {tag} {sign}{margin:.1f}% |"
         lines.append(row)
-    return "\n".join(lines)
-
-
-def _carry_score_panel(cs: dict, state: str) -> str:
-    """IM Carry Score panel（滚贴水持有评分，满分 100）。
-
-    三因子：下季贴水年化(40) + PB 10y 分位(25) + 1年贴水覆盖-1σ(25)。
-    滚贴水≠价值投资：最怕高估值+低贴水+波动上升。Carry Score 量化"收益(贴水)+
-    安全(PB估值/贴水覆盖)"，区分极佳开仓/可持有观望/观望，并按持仓状态给具体建议。
-    """
-    total = cs["total"]
-    band = cs["band"]
-    band_label = {"excellent": "极佳", "holdable": "可持有", "wait": "观望"}[band]
-    suggestion = carry_suggestion(band, state)
-
-    # 各因子档位解读
-    def _roll_tag(v, pts):
-        if pts == 40:
-            return f"{v:.1f}% ≥10%（极佳收益）"
-        if pts == 30:
-            return f"{v:.1f}% 5~10%（良好）"
-        return f"{v:.1f}% <5%（收益不足）"
-    def _pb_tag(v, pts):
-        if pts == 25:
-            return f"{v:.1f}% <30%（资产便宜）"
-        if pts == 15:
-            return f"{v:.1f}% 30~60%（中性）"
-        return f"{v:.1f}% ≥60%（偏贵）"
-    def _coverage_tag(v, pts):
-        pct = v * 100
-        if pts == 25:
-            return f"{pct:.0f}% ≥100%（贴水覆盖 -1σ 下跌）"
-        if pts == 15:
-            return f"{pct:.0f}% 50~100%（部分覆盖）"
-        return f"{pct:.0f}% <50%（覆盖不足）"
-
-    lines = [
-        f"**总分 {total}/100 — {band_label}**   {suggestion}",
-        "",
-        "| 因子 | 得分 | 当前值 | 档位 |",
-        "|---|---|---|---|",
-        f"| 下季贴水年化 | {cs['discount_pts']}/40 | "
-        f"{cs['discount_value']:.1f}% | {_roll_tag(cs['discount_value'], cs['discount_pts'])} |",
-        f"| PB 10y 分位 | {cs['pb_pts']}/25 | "
-        f"{cs['pb_pct']:.1f}% | {_pb_tag(cs['pb_pct'], cs['pb_pts'])} |",
-        f"| 1年贴水覆盖-1σ | {cs['coverage_pts']}/25 | "
-        f"{cs['coverage_ratio']*100:.0f}% | {_coverage_tag(cs['coverage_ratio'], cs['coverage_pts'])} |",
-    ]
     return "\n".join(lines)
 
 
@@ -431,13 +383,6 @@ def generate_report(
     if opt and state == "holding":
         lines.append("## 卖 Call 增厚分析（10% OTM）")
         lines.append(_option_table(opt))
-        lines.append("")
-
-    # IM Carry Score（滚贴水持有评分）— 持仓专属：持有视角的滚贴水评分
-    cs = metrics.get("carry_score")
-    if cs and state == "holding":
-        lines.append("## IM Carry Score（滚贴水持有评分）")
-        lines.append(_carry_score_panel(cs, state))
         lines.append("")
 
     # 持仓盈亏（holding 状态）

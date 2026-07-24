@@ -2,7 +2,7 @@
 from __future__ import annotations
 import unittest
 
-from signals import Signal, Thresholds, evaluate, score_carry, carry_suggestion
+from signals import Signal, Thresholds, evaluate
 
 EMPTY = "empty"
 HOLDING = "holding"
@@ -329,69 +329,6 @@ class TestConflictFiltering(unittest.TestCase):
         sigs = evaluate(HOLDING, make_metrics(pe_pct=50, days=20), self.t)
         types = [s.type for s in sigs]
         self.assertEqual(types, ["hold"])
-
-
-class TestCarryScore(unittest.TestCase):
-    """IM Carry Score 三因子评分（贴水+PB+1年覆盖-1σ）+ 档位建议。"""
-
-    def setUp(self):
-        self.t = Thresholds()
-
-    def test_current_data_scores_60(self):
-        """贴水9.7(<10→30) + PB38.9(30~60→15) + 覆盖0.88(0.5~1→15) = 60，可持有"""
-        cs = score_carry(9.7, 38.9, 0.88, self.t)
-        self.assertEqual(cs.total, 60)
-        self.assertEqual(cs.discount_pts, 30)
-        self.assertEqual(cs.pb_pts, 15)
-        self.assertEqual(cs.coverage_pts, 15)
-        self.assertEqual(cs.band, "holdable")
-
-    def test_perfect_scores_90(self):
-        """贴水≥10(40) + PB<30(25) + 覆盖≥1.0(25) → 90（excellent 需≥80）"""
-        cs = score_carry(12.0, 20.0, 1.20, self.t)
-        self.assertEqual(cs.total, 90)
-        self.assertEqual(cs.band, "excellent")
-
-    def test_discount_tiers(self):
-        """贴水分档：≥10→40, 5~10→30, <5→10"""
-        self.assertEqual(score_carry(10.0, 20, 1.0, self.t).discount_pts, 40)
-        self.assertEqual(score_carry(9.9, 20, 1.0, self.t).discount_pts, 30)
-        self.assertEqual(score_carry(5.0, 20, 1.0, self.t).discount_pts, 30)
-        self.assertEqual(score_carry(4.9, 20, 1.0, self.t).discount_pts, 10)
-
-    def test_pb_tiers(self):
-        """PB 分位分档：<30→25, 30~60→15, ≥60→5"""
-        self.assertEqual(score_carry(10, 29.9, 1.0, self.t).pb_pts, 25)
-        self.assertEqual(score_carry(10, 30.0, 1.0, self.t).pb_pts, 15)
-        self.assertEqual(score_carry(10, 59.9, 1.0, self.t).pb_pts, 15)
-        self.assertEqual(score_carry(10, 60.0, 1.0, self.t).pb_pts, 5)
-
-    def test_coverage_tiers(self):
-        """1年贴水覆盖-1σ 分档：≥1.0→25, 0.5~1.0→15, <0.5→5"""
-        self.assertEqual(score_carry(10, 40, 1.0, self.t).coverage_pts, 25)
-        self.assertEqual(score_carry(10, 40, 0.99, self.t).coverage_pts, 15)
-        self.assertEqual(score_carry(10, 40, 0.5, self.t).coverage_pts, 15)
-        self.assertEqual(score_carry(10, 40, 0.49, self.t).coverage_pts, 5)
-
-    def test_band_thresholds(self):
-        """档位：≥80 excellent, 50~79 holdable, <50 wait"""
-        self.assertEqual(score_carry(12, 20, 1.2, self.t).band, "excellent")
-        # 40+15+15=70 → holdable
-        self.assertEqual(score_carry(12, 40, 0.8, self.t).band, "holdable")
-        # 10+5+5=20 → wait
-        self.assertEqual(score_carry(3, 65, 0.3, self.t).band, "wait")
-
-    def test_carry_suggestion_differs_by_state(self):
-        """同档不同持仓状态建议不同"""
-        # 可持有档
-        self.assertIn("继续吃贴水", carry_suggestion("holdable", "holding"))
-        self.assertIn("建议暂不开仓", carry_suggestion("holdable", "empty"))
-        # 极佳档
-        self.assertIn("继续吃贴水", carry_suggestion("excellent", "holding"))
-        self.assertIn("入场", carry_suggestion("excellent", "empty"))
-        # 观望档
-        self.assertIn("平仓", carry_suggestion("wait", "holding"))
-        self.assertIn("不操作", carry_suggestion("wait", "empty"))
 
 
 if __name__ == "__main__":

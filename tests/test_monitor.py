@@ -10,7 +10,7 @@ from unittest.mock import patch
 from monitor import (
     _extract_signal_metrics, _target_trade_date, _load_position,
     cmd_open, cmd_close, _compute_expected_return, _window_median,
-    _compute_carry_score, _next_quarter_discount, _compute_discount_coverage,
+    _next_quarter_discount, _compute_discount_coverage,
 )
 from db import init_db, load_position
 
@@ -123,40 +123,6 @@ class TestNextQuarterDiscount(unittest.TestCase):
 
     def test_none_when_no_contracts(self):
         self.assertIsNone(_next_quarter_discount([]))
-
-
-class TestComputeCarryScore(unittest.TestCase):
-    """_compute_carry_score 三因子缺一返回 None，全有则评分。"""
-
-    def _bt(self, sigma1=-11.0):
-        """bottom_trend 含 -1σ 跌幅（驱动覆盖比 coverage_ratio）"""
-        return {"pb_compression": [
-            {"tag": "PB 15.9%分位 (-1σ)", "drop_pct": sigma1}]}
-
-    def test_current_data_60(self):
-        """贴水9.7 + PB38.9 + 覆盖0.88(9.7/11) → 30+15+15=60 可持有"""
-        cs = _compute_carry_score(
-            [_contract("下季", 9.7, 150)], 38.9, self._bt())
-        self.assertIsNotNone(cs)
-        self.assertEqual(cs["total"], 60)
-        self.assertEqual(cs["band"], "holdable")
-        self.assertAlmostEqual(cs["coverage_ratio"], 9.7 / 11.0, places=2)
-
-    def test_missing_discount_returns_none(self):
-        """无下季/下月/当月贴水 → None"""
-        self.assertIsNone(_compute_carry_score([], 38.9, self._bt()))
-
-    def test_missing_pb_pct_returns_none(self):
-        """PB 分位缺失 → None"""
-        self.assertIsNone(_compute_carry_score(
-            [_contract("下季", 9.7, 150)], None, self._bt()))
-
-    def test_missing_sigma1_returns_none(self):
-        """bottom_trend 无 -1σ 跌幅 → None"""
-        self.assertIsNone(_compute_carry_score(
-            [_contract("下季", 9.7, 150)], 38.9, {"pb_compression": []}))
-        self.assertIsNone(_compute_carry_score(
-            [_contract("下季", 9.7, 150)], 38.9, None))
 
 
 class TestDiscountCoverage(unittest.TestCase):

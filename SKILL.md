@@ -41,7 +41,6 @@ cd D:/workspace/csi1000-monitor && python monitor.py run 2>&1 | grep -v "UserWar
 - **预警平仓**：PE_TTM 分位 75–85%
 - **合约切换**：当月剩余天数 <7 天时切下月
 - **卖 Call 增厚**：持有 IM 多头时卖 10% OTM 当月 call 增厚收益
-- **IM Carry Score**（独立评分）：下季贴水(40)+PB分位(25)+1年贴水覆盖-1σ(25)=满分100，≥80极佳开仓/50-79可持有/<50观望，按持仓状态给建议（不替代信号，作为持有视角补充）
 
 策略本质：低估时入场，吃 backwardation 下的展期收益（roll_yield）+ 估值上涨。价格 back（roll_yield>0）才持有；价格 contango/平水立即离场。入场判断"价格底（PE/PB 分位）+ 展期收益（roll_yield）"两轴；BPS 回归仅作附录证明净资产底抬升，不参与入场（BPS 偏离趋势线反映盈利周期而非估值便宜），下行保护改由「1年贴水覆盖 -1σ」量化。
 
@@ -109,14 +108,13 @@ cd D:/workspace/csi1000-monitor && python monitor.py run 2>&1 | grep -v "UserWar
 5. **贴水覆盖性**：持有 1 年的展期贴水（按当前下季贴水线性累计）vs PB -1σ/-2σ 跌幅，逐格标 ✅已覆盖/❌未覆盖（贴水只看 1 年：-1σ 主判常态杀跌应覆盖，-2σ 极端参考不要求；3 年才覆盖说明下行保护不足）
 6. **期货合约**：IM 当月/下月/当季/下季的基差和年化贴水率
 7. **卖 Call 增厚**（持仓专属）：10% OTM call 的权利金、IV、年化增厚率、行权概率
-8. **IM Carry Score**（滚贴水持有评分，持仓专属）：下季贴水(40)+PB分位(25)+1年贴水覆盖-1σ(25)=满分100，区分极佳开仓/可持有观望/观望，按持仓状态给建议
-9. **持仓盈亏**（holding 专属）：入场价 vs 当前价浮盈
-10. **持仓预期收益**（持仓专属）：持有 IM 多头时长期年化回报拆解（ROE+分红+估值变动）
-11. **附录：BPS 净资产趋势回归**（净资产底抬升证明）：BPS=close/pb 对**全量 BPS 点**对数回归（年化增长率%）+ 全量线性回归（每年+N点），展示 R²；附趋势图。**方法论证明，不参与信号判断**
+8. **持仓盈亏**（holding 专属）：入场价 vs 当前价浮盈
+9. **持仓预期收益**（持仓专属）：持有 IM 多头时长期年化回报拆解（ROE+分红+估值变动）
+10. **附录：BPS 净资产趋势回归**（净资产底抬升证明）：BPS=close/pb 对**全量 BPS 点**对数回归（年化增长率%）+ 全量线性回归（每年+N点），展示 R²；附趋势图。**方法论证明，不参与信号判断**
 
 ## 配置
 
-阈值在 `D:/workspace/csi1000-monitor/signals.py` 的 `Thresholds` dataclass（入场/平仓/Carry Score 阈值）+ `monitor.py` 顶部的 `PCT_WINDOWS` / `FIT_MIN_POINTS`（BPS 回归最少点数）。
+阈值在 `D:/workspace/csi1000-monitor/signals.py` 的 `Thresholds` dataclass（入场/平仓阈值）+ `monitor.py` 顶部的 `PCT_WINDOWS` / `FIT_MIN_POINTS`（BPS 回归最少点数）。
 
 **持仓状态用 CLI 子命令持久化到 SQLite**：
 

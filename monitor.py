@@ -13,7 +13,7 @@ from db import (
     load_position, save_position,
 )
 from data_fetcher import fetch_valuation, fetch_daily_contracts, fetch_otm_call
-from signals import evaluate, score_carry, Thresholds, Position
+from signals import evaluate, Thresholds, Position
 from reporter import generate_report, render_status_line
 
 
@@ -555,47 +555,14 @@ def _compute_bottom_trend(
 def _next_quarter_discount(contracts: list[dict]) -> float | None:
     """取"下季"合约的年化贴水（如 IM2612）。
 
-    下季合约代表较长期限的贴水水平，比当月/下月更稳定，适合做 Carry Score 的
-    收益锚点。无下季合约时回退下月，再回退当月；都没有返回 None。
+    下季合约代表较长期限的贴水水平，比当月/下月更稳定。无下季合约时回退下月，
+    再回退当月；都没有返回 None。
     """
     for ctype in ("下季", "下月", "当月"):
         c = next((x for x in contracts if x.get("contract_type") == ctype), None)
         if c and c.get("annualized_discount") is not None:
             return c["annualized_discount"]
     return None
-
-
-def _compute_carry_score(
-    contracts: list[dict],
-    pb_pct_10y: float | None,
-    bottom_trend: dict | None,
-    t: Thresholds = THRESHOLDS,
-) -> dict | None:
-    """组装 IM Carry Score。三因子缺任一（贴水 / PB 分位 / -1σ 跌幅）返回 None。
-
-    第三因子 = 1 年贴水覆盖 -1σ：coverage_ratio = 下季贴水年化 / |PB -1σ 跌幅|。
-    ≥1 表示持有 1 年的贴水能填平一次 PB 常态杀跌（-1σ），下行有保护。
-    """
-    discount = _next_quarter_discount(contracts)
-    if discount is None or pb_pct_10y is None or not bottom_trend:
-        return None
-    sigma1 = next((r["drop_pct"] for r in bottom_trend.get("pb_compression") or []
-                   if "(-1σ)" in r.get("tag", "")), None)
-    # -1σ 跌幅缺失或为 0（无历史 PB 波动）→ 无法算覆盖比
-    if sigma1 is None or sigma1 == 0:
-        return None
-    coverage_ratio = discount / abs(sigma1)
-    cs = score_carry(discount, pb_pct_10y, coverage_ratio, t)
-    return {
-        "total": cs.total,
-        "discount_pts": cs.discount_pts,
-        "pb_pts": cs.pb_pts,
-        "coverage_pts": cs.coverage_pts,
-        "discount_value": cs.discount_value,
-        "pb_pct": cs.pb_pct,
-        "coverage_ratio": cs.coverage_ratio,
-        "band": cs.band,
-    }
 
 
 def _compute_discount_coverage(
@@ -606,7 +573,7 @@ def _compute_discount_coverage(
 
     辅助决策视角：持有吃贴水 1 年的累计收益，能否填平一次 PB 杀跌。
     贴水只看 1 年——更长 horizon 是贴水均值回归的外推，不可靠；3 年才覆盖说明
-    下行保护不足，不值得入场（见 Carry Score 覆盖因子）。
+    下行保护不足，不值得入场。
     - 展期收益按线性累计（保守口径，不复利）：累计 = 年化 × 年数
     - 跌幅取 PB 压缩情景的 -1σ（主判）/ -2σ（极端参考），drop_pct 负值
     - 累计贴水 + drop_pct ≥ 0 → 已覆盖，否则未覆盖
@@ -669,13 +636,6 @@ def _build_metrics(conn) -> dict:
         "contracts": contracts,
         "bottom_trend": bottom_trend,
     }
-
-    # IM Carry Score（下季贴水 + PB 分位 + 1年贴水覆盖-1σ，满分 100）
-    metrics["carry_score"] = _compute_carry_score(
-        contracts,
-        pb_pct.get("10y", {}).get("pct"),
-        bottom_trend,
-    )
 
     # 贴水覆盖性（持有 1 年的展期贴水 vs PB 杀跌跌幅，辅助决策）
     metrics["discount_coverage"] = _compute_discount_coverage(contracts, bottom_trend)

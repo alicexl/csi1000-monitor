@@ -43,7 +43,6 @@ roll_yield = (当月价 − 下月价) / 当月价 = 展期一次收益率（价
 | **基差** | -49.2 点 | 期货收盘 - 现货收盘；**负值=贴水**（期货便宜）|
 | **年化贴水** | +7.2% | 把基差按剩余天数年化，便于跨合约比较 |
 | **展期收益** | +0.9% | roll_yield = (当月价−下月价)/当月价（展期一次收益率），>0 价格 back 才能展期吃价差 |
-| **Carry Score** | 60 | 滚贴水持有评分(满分100)=下季贴水(40)+PB分位(25)+1年贴水覆盖-1σ(25) |
 
 **合约月份规则**（CFFEX 定义）：**当月、下月、当季、下季** 共 4 个合约同时在交易。每第三个周五交割一次。
 
@@ -95,15 +94,15 @@ python monitor.py close
 
 ```
 csi1000-monitor/
-├── monitor.py        ← CLI + 流水编排 + 多区间分位 + BPS 趋势回归 + Carry Score 计算
+├── monitor.py        ← CLI + 流水编排 + 多区间分位 + BPS 趋势回归
 ├── data_fetcher.py   ← akshare 拉取 + 基差/贴水/合约分类 + BS 定价/IV
-├── signals.py        ← 纯算法：指标 → 7 种信号 + Carry Score 评分（可单测）
+├── signals.py        ← 纯算法：指标 → 7 种信号（可单测）
 ├── reporter.py       ← Markdown 报告 + 一行状态渲染
 ├── db.py             ← SQLite WAL，4 张表 CRUD
 └── tests/            ← 186 个测试（单元 + E2E）
 ```
 
-**为什么这么拆？** 单一调用方的模块拆分避免网状依赖：所有跨模块协调都在 `monitor.py` 里发生。`signals.py` 纯算法，输入指标输出信号 + Carry Score，便于单测；`db.py` 只管存取；`data_fetcher.py` 只管拉数和定价；`reporter.py` 只管展示。
+**为什么这么拆？** 单一调用方的模块拆分避免网状依赖：所有跨模块协调都在 `monitor.py` 里发生。`signals.py` 纯算法，输入指标输出信号，便于单测；`db.py` 只管存取；`data_fetcher.py` 只管拉数和定价；`reporter.py` 只管展示。
 
 ### 4 张 SQLite 表
 
@@ -132,11 +131,10 @@ csi1000-monitor/
     │   ├─ compute_pct_for_windows()  — 多区间 PE/PB 分位（10y/5y/all）
     │   ├─ _window_median()           — PE_TTM 10 年中位数（估值回归用）
     │   ├─ _compute_bottom_trend()     — BPS 全量回归（对数趋势线 + 线性趋势 + PB 分位情景）
-    │   ├─ _compute_carry_score()      — IM Carry Score（下季贴水+PB分位+1年贴水覆盖-1σ）
     │   ├─ _compute_discount_coverage() — 贴水覆盖性（持有1年展期贴水 vs PB -1σ/-2σ 跌幅）
     │   ├─ _compute_expected_return() — 持仓预期收益三因子（ROE+分红+估值变动）
     │   ├─ fetch_otm_call()           — 实时拉期权算 BS 增厚
-    │   └─ → {pe_ttm, pe_ttm_pct, pb_pct, roll_yield, bottom_trend, carry_score, discount_coverage, expected_return, contracts, otm_call, ...}
+    │   └─ → {pe_ttm, pe_ttm_pct, pb_pct, roll_yield, bottom_trend, discount_coverage, expected_return, contracts, otm_call, ...}
     │
     ├─ _extract_signal_metrics()
     │   抽出 signals 需要的 6 个数：pe_ttm_pct_10y / pb_pct_10y /
@@ -340,31 +338,7 @@ pe_pct - pb_pct:
 
 用历史 PB **经验分位**（而非固定 1.5/1.8）定义情景，跨周期可比。分位刻度借正态 σ 的概率语言标"出现难易程度"——经验分位本身即出现概率（15.9% = 历史仅 15.9% 时间更低 ≈ -1σ），σ 仅作直观标签，**不假设 PB 正态**（PB 右偏严重，用均值±σ 理论值会穿铁底，故取经验分位对应的实际 PB）。只取左尾低估侧（-1σ/-2σ），右尾 2015 极值无参考价值。回答："资产已便宜，但估值还有多少杀跌空间"。
 
-> **贴水覆盖性**（本表跌幅 vs 下季贴水年限）：持有 1 年的展期贴水（按当前下季贴水线性累计，不复利）vs -1σ/-2σ 跌幅，逐格标 ✅已覆盖/❌未覆盖 + margin。贴水只看 1 年——更长 horizon 是贴水均值回归的外推，不可靠；3 年才覆盖说明下行保护不足。-1σ 是主判（常态杀跌，贴水应覆盖），-2σ 仅极端参考（黑天鹅级，不要求覆盖）。与 Carry Score 覆盖因子同源。
-
-### 7. IM Carry Score（滚贴水持有评分，持仓专属）
-
-满分 100 的三因子评分，量化"收益（贴水）+ 安全（PB 分位 + 下行覆盖）"。滚贴水≠价值投资，最怕高估值+低贴水+下行无保护，Carry Score 综合区分：
-
-| 因子 | 满分 | 档位 | 分值 |
-|---|---|---|---|
-| **下季贴水年化** | 40 | ≥10% / 5~10% / <5% | 40 / 30 / 10 |
-| **PB 10y 分位** | 25 | <30% / 30~60% / ≥60% | 25 / 15 / 5 |
-| **1年贴水覆盖-1σ** | 25 | ≥100% / 50~100% / <50% | 25 / 15 / 5 |
-
-> **1年贴水覆盖-1σ** = 下季贴水年化 / |PB -1σ 跌幅|。≥100% 表示一年展期贴水足以覆盖一次常态 PB 杀跌（-1σ），下行保护充分；与 §8.6 贴水覆盖性面板同源（Carry 取单值分档 25/15/5，面板逐格标 ✅/❌ + margin）。
-
-总分档位 + 按持仓状态给建议（`carry_suggestion`）：
-
-| 总分 | 档位 | 持仓建议 |
-|---|---|---|
-| ≥80 | 极佳 | 继续吃贴水 |
-| 50~79 | 可持有 | 继续吃贴水 |
-| <50 | 观望 | 关注贴水收敛，考虑平仓 |
-
-**贴水用下季合约**（如 IM2612，较长期限稳定），不是 roll_yield（价格是否 back，更适合信号判断）。Carry Score 不替代信号系统，作为"持有视角"补充——信号看入场/平仓时机，Carry 看当前值不值得持有。
-
----
+> **贴水覆盖性**（本表跌幅 vs 下季贴水年限）：持有 1 年的展期贴水（按当前下季贴水线性累计，不复利）vs -1σ/-2σ 跌幅，逐格标 ✅已覆盖/❌未覆盖 + margin。贴水只看 1 年——更长 horizon 是贴水均值回归的外推，不可靠；3 年才覆盖说明下行保护不足。-1σ 是主判（常态杀跌，贴水应覆盖），-2σ 仅极端参考（黑天鹅级，不要求覆盖）。
 
 ---
 
@@ -399,15 +373,6 @@ warn_entry_pe_pct: float = 60   # 预警入场 PE 上限
 reduce_pe_pct: float = 85       # 平仓 PE 分位上限
 warn_reduce_pe_pct: float = 75  # 预警平仓上限
 switch_days: int = 7            # 合约切换阈值（剩余天数）
-# Carry Score 阈值
-carry_discount_high: float = 10.0   # 下季贴水 ≥此值 → 40 分
-carry_discount_low: float = 5.0     # 5~10% → 30 分；<此值 → 10 分
-carry_pb_low: float = 30.0           # PB 分位 <此值 → 25 分
-carry_pb_high: float = 60.0          # 30~60% → 15 分；≥此值 → 5 分
-carry_coverage_full: float = 1.0     # 1年贴水覆盖-1σ ≥此值 → 25 分
-carry_coverage_half: float = 0.5     # 50%~100% → 15 分；<此值 → 5 分
-carry_excellent: float = 80          # 总分 ≥此值 = 极佳
-carry_holdable: float = 50           # 50~79 = 可持有；<此值 = 观望
 ```
 
 `monitor.py` 顶部常量：
