@@ -113,6 +113,8 @@ def _exit_check_panel(metrics: dict) -> str:
     pe = metrics["pe_ttm_pct"].get("10y", {}).get("pct")
     roll = metrics.get("roll_yield", 0.0)      # 当月→下月
     roll_q = metrics.get("roll_yield_q", 0.0)  # 当月→下季
+    contracts = {c["contract_type"]: c["close"] for c in metrics.get("contracts", [])}
+    cur, nxt, nq = contracts.get("当月"), contracts.get("下月"), contracts.get("下季")
 
     def _zone(v):
         if v is None:
@@ -126,7 +128,11 @@ def _exit_check_panel(metrics: dict) -> str:
     pe_high = pe is not None and pe > t.reduce_pe_pct
     basis_bad = roll < 0 and roll_q < 0  # 双段 contango 才算展期失效
     pe_str = f"{pe:.1f}%（{_zone(pe)}）" if pe is not None else "N/A"
-    seg = lambda v: f"{v:+.1f}%（contango）" if v < 0 else f"{v:+.1f}%（back）"
+    def seg(v, hi, lo):  # hi→lo 为该展期段两端合约价（当月锚点+远月），让 % 更直观
+        label = "contango" if v < 0 else "back"
+        if hi is not None and lo is not None:
+            return f"{v:+.1f}%（{label}，{hi:.0f}→{lo:.0f}）"
+        return f"{v:+.1f}%（{label}）"
 
     triggers = []
     if pe_high:
@@ -140,8 +146,8 @@ def _exit_check_panel(metrics: dict) -> str:
         "| 条件 | 当前 | 门槛 | 触发 |\n"
         "|---|---|---|---|\n"
         f"| PE_TTM 10y 分位 | {pe_str} | >{t.reduce_pe_pct:.0f}% | {'✅' if pe_high else '✗'} |\n"
-        f"| 展期 当月→下月 | {seg(roll)} | <0 | {'✅' if roll < 0 else '✗'} |\n"
-        f"| 展期 当月→下季 | {seg(roll_q)} | <0 | {'✅' if roll_q < 0 else '✗'} |\n"
+        f"| 展期 当月→下月 | {seg(roll, cur, nxt)} | <0 | {'✅' if roll < 0 else '✗'} |\n"
+        f"| 展期 当月→下季 | {seg(roll_q, cur, nq)} | <0 | {'✅' if roll_q < 0 else '✗'} |\n"
         f"\n**{verdict}**\n"
         f"> 展期需双段均<0（双段 contango）才算失效；单段 contango 视为噪音不离场"
     )
@@ -294,13 +300,13 @@ def _option_table(opt: dict) -> str:
     """卖 call 增厚分析表。"""
     lines = [
         f"合约: {opt['symbol']}  执行价: {opt['strike']:.0f}  "
-        f"OTM: {opt['otm_pct']:.1f}%  剩余: {opt['days_to_expire']}天  "
-        f"到期: {opt['expire_date']}",
+        f"≈{opt['sigma_mult']:.1f}σ (ATM IV {opt['atm_iv']:.1f}%，OTM {opt['otm_pct']:.1f}%)  "
+        f"剩余: {opt['days_to_expire']}天  到期: {opt['expire_date']}",
         "",
-        f"| 权利金(点) | 权利金(元/张) | IV | 年化增厚(名义) | 行权概率 | 盈亏平衡 | 持仓量 |",
+        f"| 权利金(点) | 权利金(元/张) | ATM IV | 年化增厚(名义) | 行权概率 | 盈亏平衡 | 持仓量 |",
         f"|---|---|---|---|---|---|---|",
         f"| {opt['premium_points']:.1f} | {opt['premium_yuan']:.0f} | "
-        f"{opt['iv']:.1f}% | **{opt['enhancement_nominal']:.1f}%** | "
+        f"{opt['atm_iv']:.1f}% | **{opt['enhancement_nominal']:.1f}%** | "
         f"{opt['assign_prob']:.1f}% | {opt['breakeven']:.0f} | "
         f"{opt['oi']:.0f} |",
     ]
@@ -338,6 +344,14 @@ def generate_report(
         lines.append("### 平仓信号检查")
         lines.append(_exit_check_panel(metrics))
         lines.append("")
+        # 持仓盈亏紧跟信号检查（持仓时最关心当前浮盈）
+        if position.entry_price:
+            entry = position.entry_price
+            pnl_pct = (close - entry) / entry * 100
+            lines.append("## 持仓盈亏")
+            lines.append(f"入场 {position.entry_date} @ {entry:.0f}，"
+                         f"当前 {close:.0f}，浮盈 {pnl_pct:+.1f}%")
+            lines.append("")
 
     lines.append("## 估值面板")
     lines.append(_valuation_table(metrics))
@@ -382,20 +396,11 @@ def generate_report(
     lines.append(_contracts_table(metrics))
     lines.append("")
 
-    # 卖 Call 增厚分析（10% OTM）— 持仓专属：备兑卖 call 需先持有 IM 多头
+    # 卖 Call 增厚分析（1σ OTM）— 持仓专属：备兑卖 call 需先持有 IM 多头
     opt = metrics.get("otm_call")
     if opt and state == "holding":
-        lines.append("## 卖 Call 增厚分析（10% OTM）")
+        lines.append("## 卖 Call 增厚分析（1σ OTM）")
         lines.append(_option_table(opt))
-        lines.append("")
-
-    # 持仓盈亏（holding 状态）
-    if state == "holding" and position.entry_price:
-        entry = position.entry_price
-        pnl_pct = (close - entry) / entry * 100
-        lines.append("## 持仓盈亏")
-        lines.append(f"入场 {position.entry_date} @ {entry:.0f}，"
-                     f"当前 {close:.0f}，浮盈 {pnl_pct:+.1f}%")
         lines.append("")
 
     # 持仓预期收益（持有 IM 多头时长期年化回报拆解）— 持仓专属

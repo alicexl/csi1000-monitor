@@ -272,51 +272,61 @@ def _pick_option_month(today: date, switch_days: int = 7) -> tuple[str, date]:
 
 
 def fetch_otm_call(
-    spot: float, today: date, otm_pct: float = 10.0, switch_days: int = 7
+    spot: float, today: date, sigma_mult: float = 1.0, switch_days: int = 7
 ) -> dict | None:
-    """拉当月/下月中证1000股指期权 → 选 OTM% 最近的 call → 算 IV/增厚率/行权概率。
+    """拉当月/下月中证1000股指期权 → 按 ATM IV 算 Nσ OTM 选 call → 算 IV/增厚率/行权概率。
 
-    返回 None 表示拉取失败（周末/网络/接口异常），不阻断主流程。
+    sigma_mult: 目标标准差倍数（1.0=1σ）。先取最接近 spot 的有卖价 strike 反推 ATM IV
+    作基准，target_strike = spot×(1+atm_iv×√T)，再取期权链里最近的 call。
+    IV 变化时 strike 自动伸缩，始终保持 Nσ 风险距离（比固定 OTM% 稳定）。
+
+    返回 None 表示拉取失败（周末/网络/接口异常/缺 ATM 卖价），不阻断主流程。
     """
     mo_symbol, expire = _pick_option_month(today, switch_days)
     df = retry(lambda: ak.option_cffex_zz1000_spot_sina(symbol=mo_symbol), retries=2)
     if df is None or df.empty:
         return None
 
-    target_strike = spot * (1 + otm_pct / 100.0)
-    best = None
-    best_diff = 1e9
+    # 解析期权链：每个 strike 的 call 卖价
+    calls = []  # [(strike, call_sell, oi)]
     for _, r in df.iterrows():
         try:
             k = float(r.iloc[7])  # 行权价
-            diff = abs(k - target_strike)
-            if diff < best_diff:
-                cs = r.iloc[3]  # call 卖价
-                if str(cs) in ("-", "", "None"):
-                    continue
-                best_diff = diff
-                best = {
-                    "symbol": mo_symbol,
-                    "strike": k,
-                    "call_sell": float(cs),
-                    "oi": float(r.iloc[5]) if str(r.iloc[5]) not in ("-", "", "None") else 0,
-                }
+            cs = r.iloc[3]  # call 卖价
+            if str(cs) in ("-", "", "None"):
+                continue
+            oi = float(r.iloc[5]) if str(r.iloc[5]) not in ("-", "", "None") else 0
+            calls.append((k, float(cs), oi))
         except (ValueError, TypeError, IndexError):
             continue
-    if best is None:
+    if not calls:
         return None
 
-    premium = best["call_sell"]
     days = (expire - today).days
     T = days / 365.0
-    iv = implied_vol(premium, spot, best["strike"], T)
-    otm = (best["strike"] - spot) / spot * 100
-    prob = prob_above_strike(spot, best["strike"], T, iv) if iv > 0 else 0
+
+    # ATM IV 基准：最接近 spot 的有卖价 strike 反推
+    atm = min(calls, key=lambda c: abs(c[0] - spot))
+    atm_iv = implied_vol(atm[1], spot, atm[0], T)
+    if atm_iv <= 0:
+        return None
+
+    # Nσ OTM target strike（简单口径，tastyworks 风格）→ 取期权链最近 call
+    target_strike = spot * (1 + sigma_mult * atm_iv * math.sqrt(T))
+    best = min(calls, key=lambda c: abs(c[0] - target_strike))
+
+    premium = best[1]
+    iv = implied_vol(premium, spot, best[0], T)
+    otm = (best[0] - spot) / spot * 100
+    actual_sigma = (best[0] / spot - 1) / (atm_iv * math.sqrt(T))
+    prob = prob_above_strike(spot, best[0], T, atm_iv)
     enh_nominal = annualized_enhancement(premium, spot, days)
 
     return {
-        "symbol": best["symbol"],
-        "strike": best["strike"],
+        "symbol": mo_symbol,
+        "strike": best[0],
+        "sigma_mult": actual_sigma,   # 实际选到的 ≈Nσ（strike 离散会有偏差）
+        "atm_iv": atm_iv * 100,
         "otm_pct": otm,
         "premium_points": premium,
         "premium_yuan": premium * 200,
@@ -324,8 +334,8 @@ def fetch_otm_call(
         "days_to_expire": days,
         "expire_date": expire.isoformat(),
         "assign_prob": prob * 100,
-        "breakeven": best["strike"] + premium,
+        "breakeven": best[0] + premium,
         "enhancement_nominal": enh_nominal,
-        "oi": best["oi"],
+        "oi": best[2],
         "fetched_at": datetime.now().isoformat(timespec="seconds"),
     }

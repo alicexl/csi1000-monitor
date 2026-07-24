@@ -662,7 +662,7 @@ def _build_metrics(conn) -> dict:
     # 期权增厚分析（实时拉取，失败不阻断）
     try:
         metrics["otm_call"] = fetch_otm_call(
-            close, date.today(), otm_pct=10.0,
+            close, date.today(), sigma_mult=1.0,
             switch_days=THRESHOLDS.switch_days)
     except Exception:
         metrics["otm_call"] = None
