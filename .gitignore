@@ -1,3 +1,4 @@
 __pycache__/
 *.db
-reports/
+reports/*
+!reports/example-*.md
