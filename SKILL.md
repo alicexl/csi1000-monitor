@@ -11,7 +11,7 @@ description: Use when user mentions 中证1000 / 中证 1000 / csi1000 / IM 期�
 
 ## 项目目录
 
-`D:/workspace/csi1000-monitor/` （GitHub: alicexl/csi1000-monitor）
+本仓库根目录（GitHub: alicexl/csi1000-monitor）
 
 ## 用法
 
@@ -27,7 +27,8 @@ description: Use when user mentions 中证1000 / 中证 1000 / csi1000 / IM 期�
 用户说"跑一下" / "看看" / 没指定子命令 → 跑 `run`：
 
 ```bash
-cd D:/workspace/csi1000-monitor && python monitor.py run 2>&1 | grep -v "UserWarning\|from pandas"
+# 在仓库根目录执行
+python monitor.py run 2>&1 | grep -v "UserWarning\|from pandas"
 ```
 
 周末/假日 `get_futures_daily` 返回 0 合约是正常的，工作日重试。
@@ -44,42 +45,17 @@ cd D:/workspace/csi1000-monitor && python monitor.py run 2>&1 | grep -v "UserWar
 
 策略本质：低估时入场，吃 backwardation 下的展期收益（roll_yield）+ 估值上涨。价格 back（roll_yield>0）才持有；展期双段 contango（当月→下月+当月→下季均<0）才离场，单段 contango 视为交割噪音走 hold。入场判断"价格底（PE/PB 分位）+ 展期收益（roll_yield）"两轴；BPS 回归仅作附录证明净资产底抬升，不参与入场（BPS 偏离趋势线反映盈利周期而非估值便宜），下行保护改由「1年贴水覆盖 -1σ」量化。
 
-## 估值反推：预测入场点位（2026-07-19 测算）
+## 估值反推：预测入场点位
 
-用户问"指数还要跌多少才能入场"时，用以下口径反推。
-
-### 核心公式
+用户问"指数还要跌多少才能入场"时，用**当前** close/PE/PB 实时反推（别引用旧快照数字）：
 
 ```
-当前隐含盈利 E = close / PE_TTM
-当前隐含净资产 B = close / PB
-
-要触发 PE_TTM 分位 <X%：close = (历史 PE_TTM X% 分位) × E
-要触发 PB    分位 <X%：close = (历史 PB    X% 分位) × B
+隐含盈利 E = close / PE_TTM      隐含净资产 B = close / PB
+触发 PE_TTM 分位 <X% → close = (历史 PE_TTM X% 分位) × E
+触发 PB    分位 <X% → close = (历史 PB    X% 分位) × B
 ```
 
-### 2026-07-19 测算结果（当前 close=7168, PE_TTM=30.6, PB=2.28）
-
-| 口径 | 触发阈值 | 对应指数 | 距 7168 |
-|---|---|---|---|
-| **PE_TTM 10y 50% 分位**（入场线）| PE=26.09 | **6116** | −14.7% |
-| **PB 10y 10% 分位**（稳健底）| PB=1.93 | **6068** | −15.3% |
-| PB 10y 5% 分位（深度底）| PB=1.83 | 5753 | −19.7% |
-| PB=1.8 历史极端底 | PB=1.80 | 5659 | −21.0% |
-
-**两个独立口径（PE 看 E、PB 看 B）都指向 6000-6100**——这是估值共振底，不是巧合。
-
-### 三档建仓建议
-
-- **第一档（轻仓试探，6500 附近，−9%）**：需配合盈利拐点（E 涨 10% 抵消 P 跌 5%）
-- **第二档（半仓，6100 附近，−15%）**：PE/PB 共振触发分位阈值，策略入场信号
-- **第三档（重仓，5500 附近，−23%）**：PB <5% 分位历史极端，"别人恐惧时贪婪"
-
-### 关键认知
-
-1. **PE_TTM 分位 ≠ 价格分位**：PE = P/E，价格不动时盈利涨跌会改变 PE。当前 PE 72% 分位但 PB 仅 35% 分位（+37pp 背离），说明**盈利周期在低位**——单看 PE 会悲观，但 PB 显示没那么贵
-2. **历史底部 PB < 1.8**（占历史 3.6% 交易日，价格区间 4149-5270，中位 4721）
-3. **从平仓区（85%）到入场区（50%）通常需要 1-2 年 + 30% 跌幅**（参考 2015、2021 顶部）
+PE 看 E、PB 看 B 两口径独立反推，共振即估值底。注意：① PE 分位 ≠ 价格分位（盈利涨跌会改 PE，PE/PB 分位常背离，单看 PE 易误判）；② 历史底 PB<1.8（约 3.6% 分位）；③ 从平仓区（85%）回到入场区（50%）历史约需 1-2 年 + 30% 跌幅。历史分位阈值从 DB 的 PE/PB 序列取（10y 窗口），**不写死数字**。
 
 ## 7 种信号
 
@@ -95,7 +71,7 @@ cd D:/workspace/csi1000-monitor && python monitor.py run 2>&1 | grep -v "UserWar
 
 ## 展示结果
 
-报告路径：`D:/workspace/csi1000-monitor/reports/csi1000_YYYY-MM-DD.md`
+报告路径：`reports/csi1000_YYYY-MM-DD.md`（仓库根下）
 
 读取后向用户展示：
 
@@ -114,7 +90,7 @@ cd D:/workspace/csi1000-monitor && python monitor.py run 2>&1 | grep -v "UserWar
 
 ## 配置
 
-阈值在 `D:/workspace/csi1000-monitor/signals.py` 的 `Thresholds` dataclass（入场/平仓阈值）+ `monitor.py` 顶部的 `PCT_WINDOWS` / `FIT_MIN_POINTS`（BPS 回归最少点数）。
+阈值在 `signals.py` 的 `Thresholds` dataclass（入场/平仓阈值）+ `monitor.py` 顶部的 `PCT_WINDOWS` / `FIT_MIN_POINTS`（BPS 回归最少点数）。
 
 **持仓状态用 CLI 子命令持久化到 SQLite**：
 
@@ -133,8 +109,4 @@ python monitor.py close                          # 平仓
 | option 部分缺失 | 周末无实时数据 | 工作日重试 |
 | PE/PB 数据空 | 网络问题 | 重试 `python monitor.py run` |
 | `KeyError` 列名 | akshare 改了列名 | 检查 `data_fetcher.py` 的 rename 映射 |
-| `stock_index_pb_lg` 报 `pb_w` | 第 4 列是等权不是加权 | 自己算分位（详见 `memory/akshare-pitfalls.md`）|
-
-## 设计文档
-
-- akshare 数据接口陷阱：`memory/akshare-pitfalls.md`
+| `stock_index_pb_lg` 报 `pb_w` | 第 4 列是等权不是加权 | 自己算分位（详见 README §十一 已知坑）|
