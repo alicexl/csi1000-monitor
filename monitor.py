@@ -316,7 +316,7 @@ def plot_bps_trend(
     return base64.b64encode(buf.getvalue()).decode("ascii")
 
 
-# 预期收益计算的默认假设（来自杨康平《股指期货吃贴水策略》PDF 经验值）
+# 预期收益计算的默认假设（经验值）
 DEFAULT_DIVIDEND_YIELD = 1.0  # 中证1000 近年股息率约 1-2%，取保守下限
 
 
@@ -336,7 +336,7 @@ def _compute_expected_return(
     pe_median_10y: float | None,
     dividend_yield: float = DEFAULT_DIVIDEND_YIELD,
 ) -> dict:
-    """三因子预期收益模型（杨康平 PDF 框架）：
+    """三因子预期收益模型：
 
         预期年化 = ROE + 分红 + 估值变动
 
@@ -655,7 +655,7 @@ def _build_metrics(conn) -> dict:
     # 贴水覆盖性（持有 1 年的展期贴水 vs PB 杀跌跌幅，辅助决策）
     metrics["discount_coverage"] = _compute_discount_coverage(contracts, bottom_trend)
 
-    # 预期收益三因子（PDF 框架：ROE + 分红 + 估值变动；展期收益单独看 roll_yield）
+    # 预期收益三因子（ROE + 分红 + 估值变动；展期收益单独看 roll_yield）
     metrics["expected_return"] = _compute_expected_return(
         close, pe_ttm, pb, pe_median_10y)
 

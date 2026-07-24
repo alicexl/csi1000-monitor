@@ -261,7 +261,7 @@ def _discount_coverage_panel(cov: dict) -> str:
 
 
 def _expected_return_panel(er: dict) -> str:
-    """三因子预期收益 panel（PDF 杨康平框架：ROE + 分红 + 估值变动）。
+    """三因子预期收益 panel（ROE + 分红 + 估值变动）。
 
     展期收益（roll_yield = 展期一次收益率，价格是否 back）单独看 status_line 和期货合约表的基差，
     不作为多年复利收益的预测分量（期限结构会变化，难以长期预测）。
