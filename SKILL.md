@@ -5,7 +5,9 @@ description: Use when user mentions 中证1000 / 中证 1000 / csi1000 / IM 期�
 
 # csi1000-monitor
 
-中证 1000 贴水策略监控器。一键拉数据（PE/PB 历史 + IM 期货 + MO 期权）→ 算多区间估值分位 / 期货基差年化贴水 / 1σ OTM call 增厚 → 输出 7 种信号 + Markdown 报告。
+中证 1000 **Roll Yield Monitor**（贴水策略执行与监控工具）。一键拉数据（PE/PB 历史 + IM 期货 + MO 期权）→ 算多区间估值分位 / 展期收益 roll yield / 1σ OTM call 增厚 → 输出 7 种信号 + Markdown 报告。
+
+**定位：策略执行与监控工具，不是回测验证过的量化策略。** 它每天判断"当前是否满足策略假设"、监控假设有没有失效、在假设成立时给出执行信号。
 
 不负责：实盘下单、回测、其他指数（沪深 300 / 中证 500 用对应工具）。
 
@@ -44,6 +46,21 @@ python monitor.py run 2>&1 | grep -v "UserWarning\|from pandas"
 - **卖 Call 增厚**：持有 IM 多头时卖 1σ OTM 当月 call 增厚收益（按 ATM IV 算 1σ strike，IV 变化时自动伸缩）
 
 策略本质：低估时入场，吃 backwardation 下的展期收益（roll_yield）+ 估值上涨。价格 back（roll_yield>0）才持有；展期双段 contango（当月→下月+当月→下季均<0）才离场，单段 contango 视为交割噪音走 hold。入场判断"价格底（PE/PB 分位）+ 展期收益（roll_yield）"两轴；BPS 回归仅作附录证明净资产底抬升，不参与入场（BPS 偏离趋势线反映盈利周期而非估值便宜），下行保护改由「1年贴水覆盖 -1σ」量化。
+
+## 验证边界（解读/展示时遵守）
+
+向用户解读时**不要宣称"策略能赚钱/已回测验证"**。区分已验证与假设：
+
+| 内容 | 性质 |
+|---|---|
+| PE/PB 分位、roll_yield 正负、基差贴水、BS 定价 | ✅ 已验证（客观计算） |
+| IM 长期以 backwardation 为主 | ⚠️ 经验假设（IM 2022-07 上市，仅 4 年样本） |
+| PE<50% 入场 / PE>85% 平仓阈值 | ⚠️ 经验规则（未优化验证） |
+| 双段 contango 才离场 | 🎨 策略设计（有解释） |
+| 1σ OTM call 增厚长期为正 | ⚠️ 经验规则（未验证） |
+| 策略长期超额收益 | ❌ 尚未验证 |
+
+用户问"策略收益/能赚钱吗"时说明：本项目是**纪律化执行框架**，IM 期货 2022-07 才上市、期限结构样本不足 4 年，无法证明稳定超额收益；它做的是假设成立时给信号、假设失效时提示离场。
 
 ## 估值反推：预测入场点位
 
@@ -109,4 +126,4 @@ python monitor.py close                          # 平仓
 | option 部分缺失 | 周末无实时数据 | 工作日重试 |
 | PE/PB 数据空 | 网络问题 | 重试 `python monitor.py run` |
 | `KeyError` 列名 | akshare 改了列名 | 检查 `data_fetcher.py` 的 rename 映射 |
-| `stock_index_pb_lg` 报 `pb_w` | 第 4 列是等权不是加权 | 自己算分位（详见 README §十一 已知坑）|
+| `stock_index_pb_lg` 报 `pb_w` | 第 4 列是等权不是加权 | 自己算分位（详见 README §十二 已知坑）|
