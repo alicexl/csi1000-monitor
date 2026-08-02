@@ -101,9 +101,10 @@ BOTTOM_START_DATE = "2014-10-17"  # PB 数据起点（指数上市首日）；�
 # 用历史 PB 经验分位定义情景，分位刻度借正态 σ 的概率语言标注"出现难易程度"
 # （经验分位本身即为出现概率，σ 仅作直观标签，不假设 PB 正态——PB 右偏严重，
 # 用均值±σ 理论值会穿铁底，故取经验分位对应的 PB 实际值）：
-#   50%(0σ) 中位 ｜ 15.9%(-1σ) 低估 ｜ 2.3%(-2σ) 极低估（历史仅 2.3% 时间更低）
+#   50%(0σ) 中位 ｜ 15.9%(-1σ) 低估 ｜ 1%(-2σ) 极低估（历史仅 1% 时间更低，
+#   ≈2024 年双波危机实测支撑区 PB 1.60；不用单日极值 1.49——只持续 1 天属异常值）
 # 跨周期可比，避免固定值（如 1.5）随时间失效。只取左尾低估侧，右尾(2015 极值)无参考价值。
-PB_COMPRESSION_PERCENTILES = [50, 15.9, 2.3]
+PB_COMPRESSION_PERCENTILES = [50, 15.9, 1.0]
 
 
 def compute_bps(close: float, pb: float) -> float:
@@ -127,7 +128,7 @@ def percentile_value(series: list[float], pct: float) -> float | None:
 
 
 # 经验分位(%) → 正态 σ 标签（借概率语言标"出现难易"，不假设分布正态）
-_PCT_TO_SIGMA = {50: "0σ", 15.9: "-1σ", 2.3: "-2σ", 84.1: "+1σ", 97.7: "+2σ"}
+_PCT_TO_SIGMA = {50: "0σ", 15.9: "-1σ", 1.0: "-2σ", 84.1: "+1σ", 97.7: "+2σ"}
 
 
 def pb_compression_scenarios(
@@ -138,8 +139,9 @@ def pb_compression_scenarios(
     """PB 压缩空间：固定资产 B=close/pb，算各 PB 分位情景对应点位与跌幅。
 
     逻辑：P = B × PB，B 固定（当前净资产），PB 越低 → P 越低。
-    情景用历史 PB 经验分位定义（50%中位/15.9%低估/2.3%极低估），跨周期可比。
-    分位刻度借正态 σ 概率标签：15.9%=历史仅 15.9% 时间更低(-1σ)，2.3%=-2σ。
+    情景用历史 PB 经验分位定义（50%中位/15.9%低估/1%极低估），跨周期可比。
+    分位刻度借正态 σ 概率标签：15.9%=历史仅 15.9% 时间更低(-1σ)，1%≈-2σ
+    （1% 分位 ≈2024 年双波危机实测支撑区 PB 1.60；不用单日极值 1.49——异常值）。
     返回 [{pb, price, drop_pct, tag}, ...] 含当前行 + 各分位情景，或 None。
     drop_pct = (price - current) / current * 100（负值=跌幅）。
     无历史 PB 时退化为只用当前行。
@@ -157,7 +159,8 @@ def pb_compression_scenarios(
             price = book * pb
             drop = (price - current_close) / current_close * 100
             sig = _PCT_TO_SIGMA.get(pct)
-            tag = f"PB {pct}%分位 ({sig})" if sig else f"PB {pct}%分位"
+            pct_label = f"{pct:g}"  # 1.0 → "1"，50 → "50"，15.9 → "15.9"
+            tag = f"PB {pct_label}%分位 ({sig})" if sig else f"PB {pct_label}%分位"
             rows.append({"pb": pb, "price": price, "drop_pct": drop, "tag": tag})
     return rows
 

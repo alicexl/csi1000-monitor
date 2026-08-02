@@ -74,10 +74,10 @@ class TestPercentileValue(unittest.TestCase):
 
 class TestPbCompressionScenarios(unittest.TestCase):
     def test_uses_history_percentiles(self):
-        """分位驱动：50%/15.9%/2.3% 分位对应历史 PB 值，σ 概率标签"""
+        """分位驱动：50%/15.9%/1% 分位对应历史 PB 值，σ 概率标签"""
         # 构造 PB 历史 1.0..3.0（100 个值），当前 PB=2.5
         pb_hist = [1.0 + i * 2.0 / 99 for i in range(100)]
-        rows = pb_compression_scenarios(7260, 2.5, pb_hist, pcts=[50, 15.9, 2.3])
+        rows = pb_compression_scenarios(7260, 2.5, pb_hist, pcts=[50, 15.9, 1.0])
         self.assertIsNotNone(rows)
         # 当前行 + 3 个分位情景
         self.assertEqual(len(rows), 4)
@@ -93,14 +93,14 @@ class TestPbCompressionScenarios(unittest.TestCase):
         self.assertTrue(all(d < 0 for d in drops))
 
     def test_sigma_label_mapping(self):
-        """σ 概率标签：50→0σ, 15.9→-1σ, 2.3→-2σ；非映射分位无 σ 后缀"""
+        """σ 概率标签：50→0σ, 15.9→-1σ, 1→-2σ；非映射分位无 σ 后缀"""
         pb_hist = [1.0 + i * 0.01 for i in range(100)]
         rows = pb_compression_scenarios(7260, 2.31, pb_hist,
-                                        pcts=[50, 15.9, 2.3, 10])
+                                        pcts=[50, 15.9, 1.0, 10])
         tags = [r["tag"] for r in rows[1:]]
         self.assertEqual(tags[0], "PB 50%分位 (0σ)")
         self.assertEqual(tags[1], "PB 15.9%分位 (-1σ)")
-        self.assertEqual(tags[2], "PB 2.3%分位 (-2σ)")
+        self.assertEqual(tags[2], "PB 1%分位 (-2σ)")
         self.assertEqual(tags[3], "PB 10%分位")  # 10 不在 σ 映射 → 无后缀
 
     def test_drop_pct_formula(self):
@@ -126,7 +126,7 @@ class TestPbCompressionScenarios(unittest.TestCase):
         self.assertEqual(rows[0]["tag"], "当前")
 
     def test_default_percentiles(self):
-        """不传 pcts 用默认 PB_COMPRESSION_PERCENTILES（50/15.9/2.3）"""
+        """不传 pcts 用默认 PB_COMPRESSION_PERCENTILES（50/15.9/1.0）"""
         pb_hist = [1.0 + i * 0.01 for i in range(100)]
         rows = pb_compression_scenarios(7260, 2.31, pb_hist)
         self.assertEqual(len(rows), 1 + len(PB_COMPRESSION_PERCENTILES))
