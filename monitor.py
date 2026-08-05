@@ -289,7 +289,7 @@ def plot_bps_trend(
     plt.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei", "DejaVu Sans"]
     plt.rcParams["axes.unicode_minus"] = False
     fig, ax = plt.subplots(figsize=(11, 5.5))
-    ax.scatter(ds, bs, s=5, c=ts, cmap="viridis", alpha=0.45,
+    ax.scatter(ds, bs, s=5, c=ts, cmap="viridis_r", alpha=0.45,
                label=f"每日 BPS（n={n}）")
     grid_t = [ts[0] + (ts[-1] - ts[0]) * i / 200 for i in range(201)]
     grid_d = [first + timedelta(days=t * 365.25) for t in grid_t]
