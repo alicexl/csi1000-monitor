@@ -188,12 +188,12 @@ class TestComputeCapital(unittest.TestCase):
         {"pb": 1.61, "price": 5085, "drop_pct": -34.6, "tag": "PB 1%分位 (-2σ)"},
     ]
 
-    def test_nominal_margin_liq_price(self):
-        """名义价值 = 7770×200；保证金 = 15%；耗尽线 = 7770×85%"""
+    def test_nominal_margin_zero_price(self):
+        """名义价值 = 7770×200；保证金 = 15%；权益归零线 = 7770×85%"""
         cap = _compute_capital(7770, self.PB_ROWS)
         self.assertAlmostEqual(cap["notional"], 7770 * 200)
         self.assertAlmostEqual(cap["margin"], 7770 * 200 * 0.15)
-        self.assertAlmostEqual(cap["liq_price"], 7770 * 0.85)
+        self.assertAlmostEqual(cap["zero_price"], 7770 * 0.85)
 
     def test_scenario_loss_per_point_200(self):
         """每跌 1 点浮亏 200 元：-1σ 6443 → (7770-6443)×200；跌幅相对 base"""
@@ -203,17 +203,31 @@ class TestComputeCapital(unittest.TestCase):
         self.assertAlmostEqual(s1["loss_yuan"], (7770 - 6443) * 200)
         self.assertAlmostEqual(s1["drop_pct"], (6443 - 7770) / 7770 * 100, places=1)
 
+    def test_topup_restores_risk_100(self):
+        """补足至 100% 风险度需追加 = 浮亏×85%：追加后权益 = 新保证金占用
+        （新占用 = 新点位×200×15%，比开仓占用低浮亏的 15%）"""
+        cap = _compute_capital(7770, self.PB_ROWS)
+        s1 = cap["scenarios"][0]
+        loss = (7770 - 6443) * 200
+        self.assertAlmostEqual(s1["topup_yuan"], loss * 0.85)
+        # 追加后：权益 = 保证金 - 浮亏 + 追加 == 新占用 6443×200×15%
+        new_occupancy = 6443 * 200 * 0.15
+        equity_after = cap["margin"] - loss + s1["topup_yuan"]
+        self.assertAlmostEqual(equity_after, new_occupancy)
+
     def test_rows_above_base_skipped(self):
         """高于基准价的情景（当前/0σ 浮盈行）不列入补缴表"""
         cap = _compute_capital(7770, self.PB_ROWS)
         self.assertEqual([s["tag"] for s in cap["scenarios"]],
                          ["PB 15.9%分位 (-1σ)", "PB 1%分位 (-2σ)"])
 
-    def test_total_1sigma_is_margin_plus_topup(self):
-        """建议总资金 = 保证金 + 扛 -1σ 补缴"""
+    def test_total_1sigma_is_margin_plus_loss(self):
+        """建议总资金 = 保证金 + 扛 -1σ 浮亏（备足后风险度 = 新占用/保证金）"""
         cap = _compute_capital(7770, self.PB_ROWS)
         expected = 7770 * 200 * 0.15 + (7770 - 6443) * 200
         self.assertAlmostEqual(cap["total_1sigma"], expected)
+        # 备足后跌至 -1σ：权益 = 保证金，风险度 = 6443/7770 < 100%
+        self.assertAlmostEqual(cap["risk_1sigma_pct"], 6443 / 7770 * 100, places=1)
 
     def test_base_recomputes_drop_from_entry(self):
         """持仓：base=入场价 7500 → 跌幅/补缴都相对入场价重算"""

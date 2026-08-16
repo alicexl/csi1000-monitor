@@ -592,9 +592,12 @@ def _compute_capital(
 
     base_price：空仓取当前收盘（假设现价开仓），持仓取入场价。
     - 名义价值 = base × 200；开仓保证金 = 名义 × 15%
-    - 保证金耗尽线 = base × (1-15%)：不加钱跌 15% 保证金亏光（强平风险）
-    - 补缴资金 = 浮亏全额（每跌 1 点 = 200 元）；实际追加保证金按当日
-      结算价计 ≈ 浮亏×85%（保证金占用随价格同步下降 15%），按全额备足更稳妥
+    - 开仓即风险度 100%（权益 = 保证金占用，无下跌缓冲）：任何浮亏
+      （价格低于 base）风险度就 >100%，触发追保
+    - 权益归零线 = base × (1-15%)：不加钱跌 15% 权益归零，再跌即穿仓
+    - 每个下跌情景给两个数：浮亏（每跌 1 点 = 200 元）+ 补足至风险度
+      100% 需追加 = 浮亏×85%（新保证金占用随价格同步下降 15%，追加后
+      权益 = 新占用，风险度恰好回 100%）
     - 情景复用 pb_compression（PB 分位情景点位），跌幅相对 base 重算，
       只保留低于 base 的下跌情景
     base_price<=0 或无下跌情景返回 None。
@@ -615,10 +618,12 @@ def _compute_capital(
             "price": price,
             "drop_pct": drop,
             "loss_yuan": loss,
+            "topup_yuan": loss * (1 - IM_MARGIN_RATE),
         })
     if not scenarios:
         return None
-    # 建议总资金：保证金 + 扛 -1σ 的补缴（-1σ 为主判情景）
+    # 建议总资金：保证金 + 扛 -1σ 的浮亏（-1σ 为主判情景）。备足后跌至 -1σ：
+    # 权益 = 保证金（浮亏恰好吞掉缓冲），风险度 = 新占用/保证金 = p_1σ/base
     one_sigma = next((s for s in scenarios if "(-1σ)" in s["tag"]), None)
     total = margin + one_sigma["loss_yuan"] if one_sigma else None
     return {
@@ -626,9 +631,11 @@ def _compute_capital(
         "base_label": base_label,
         "notional": notional,
         "margin": margin,
-        "liq_price": base_price * (1 - IM_MARGIN_RATE),
+        "zero_price": base_price * (1 - IM_MARGIN_RATE),
         "scenarios": scenarios,
         "total_1sigma": total,
+        "risk_1sigma_pct": (one_sigma["price"] / base_price * 100
+                           if one_sigma else None),
     }
 
 

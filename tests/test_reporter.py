@@ -204,34 +204,50 @@ class TestCapitalPanel(unittest.TestCase):
             "base_label": "现价",
             "notional": 7770 * 200,
             "margin": 7770 * 200 * 0.15,
-            "liq_price": 7770 * 0.85,
+            "zero_price": 7770 * 0.85,
             "scenarios": [
                 {"tag": "PB 15.9%分位 (-1σ)", "price": 6443, "drop_pct": -17.1,
-                 "loss_yuan": (7770 - 6443) * 200},
+                 "loss_yuan": (7770 - 6443) * 200,
+                 "topup_yuan": (7770 - 6443) * 200 * 0.85},
                 {"tag": "PB 1%分位 (-2σ)", "price": 5085, "drop_pct": -34.6,
-                 "loss_yuan": (7770 - 5085) * 200},
+                 "loss_yuan": (7770 - 5085) * 200,
+                 "topup_yuan": (7770 - 5085) * 200 * 0.85},
             ],
             "total_1sigma": 7770 * 200 * 0.15 + (7770 - 6443) * 200,
+            "risk_1sigma_pct": 6443 / 7770 * 100,
         }
 
-    def test_panel_shows_margin_and_topup(self):
-        """155.4 万名义 / 23.3 万保证金 / 26.5 万补缴 / 建议总资金"""
+    def test_panel_shows_margin_loss_and_topup(self):
+        """155.4 万名义 / 23.3 万保证金 / 26.5 万浮亏 / 22.6 万追加 / 建议总资金"""
         out = _capital_panel(self._cap())
         self.assertIn("155.4 万", out)    # 7770×200
         self.assertIn("23.3 万", out)     # 保证金 15%
-        self.assertIn("26.5 万", out)     # -1σ 补缴 (7770-6443)×200
-        self.assertIn(f"{7770 * 0.85:.0f}", out)  # 保证金耗尽线
+        self.assertIn("26.5 万", out)     # -1σ 浮亏 (7770-6443)×200
+        self.assertIn("22.6 万", out)     # -1σ 追加 = 浮亏×85%
+        self.assertIn(f"{7770 * 0.85:.0f}", out)  # 权益归零线
         self.assertIn("建议总资金", out)
         self.assertIn("每跌 1 点浮亏 200 元", out)
 
+    def test_panel_shows_risk_mechanics(self):
+        """追保触发/权益归零线/风险度 100% 口径文案"""
+        out = _capital_panel(self._cap())
+        self.assertIn("追保触发", out)
+        self.assertIn("权益归零线", out)
+        self.assertIn("开仓即风险度 100%", out)
+        self.assertIn("补足至 100% 风险度需追加", out)
+        self.assertIn("风险度恰好回 100%", out)
+        self.assertIn("≈83%", out)  # 备足后 -1σ 风险度 6443/7770
+
     def test_no_scenarios_skips_table_keeps_margin(self):
-        """无下跌情景 → 无补缴表，但保证金/耗尽线仍展示"""
+        """无下跌情景 → 无资金缺口表，但保证金/权益归零线仍展示"""
         cap = self._cap()
         cap["scenarios"] = []
         cap["total_1sigma"] = None
+        cap["risk_1sigma_pct"] = None
         out = _capital_panel(cap)
         self.assertIn("23.3 万", out)
-        self.assertNotIn("需补缴", out)
+        self.assertIn("权益归零线", out)
+        self.assertNotIn("下跌资金缺口", out)
         self.assertNotIn("建议总资金", out)
 
     def test_panel_in_full_report(self):
