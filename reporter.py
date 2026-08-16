@@ -234,6 +234,48 @@ def _pb_compression_panel(rows: list) -> str:
     return "\n".join(lines)
 
 
+def _capital_panel(cap: dict) -> str:
+    """资金测算 panel：1 手 IM 的名义价值 / 保证金（15%）/ 下跌补缴资金。
+
+    空仓以现价为基准（假设现价开仓），持仓以入场价为基准。补缴按浮亏全额
+    （每跌 1 点 200 元）备足；实际追加保证金按每日结算价计 ≈ 浮亏×85%
+    （保证金占用随价格同步下降 15%），按全额备足更稳妥。
+    """
+    b = cap["base_price"]
+    label = cap.get("base_label", "现价")
+    lines = [
+        f"| 项目 | 金额 |",
+        f"|---|---|",
+        f"| 合约名义价值（1 手） | {cap['notional'] / 1e4:.1f} 万（{b:.0f} 点 × 200 元/点）|",
+        f"| 开仓保证金（15% 估算） | **{cap['margin'] / 1e4:.1f} 万** |",
+        f"| 保证金耗尽线 | {cap['liq_price']:.0f} 点（不加钱跌 15% 保证金亏光）|",
+    ]
+    if cap["scenarios"]:
+        lines += [
+            "",
+            f"下跌补缴资金（自{label}，每跌 1 点浮亏 200 元/手）：",
+            "",
+            f"| 情景 | 点位 | 自{label}跌幅 | 需补缴（1 手）|",
+            f"|---|---|---|---|",
+        ]
+        for s in cap["scenarios"]:
+            lines.append(
+                f"| {s['tag']} | {s['price']:.0f} | {s['drop_pct']:.1f}% | "
+                f"{s['loss_yuan'] / 1e4:.1f} 万 |")
+    if cap.get("total_1sigma"):
+        lines += [
+            "",
+            f"**建议总资金（扛 -1σ 不再追加）**：保证金 + 补缴 ≈ "
+            f"**{cap['total_1sigma'] / 1e4:.1f} 万**",
+        ]
+    lines += [
+        "",
+        "> 实际追加保证金按当日结算价计算 ≈ 浮亏×85%（保证金占用随价格同步下降 15%），"
+        "表中按浮亏全额备足。多手持仓按倍数放大。",
+    ]
+    return "\n".join(lines)
+
+
 def _discount_coverage_panel(cov: dict) -> str:
     """贴水覆盖性 panel：持有 1 年的展期贴水 vs PB -1σ/-2σ 跌幅。
 
@@ -383,6 +425,13 @@ def generate_report(
             lines.append("## PB 分位情景点位")
             lines.append(_pb_compression_panel(pb_rows))
             lines.append("")
+
+    # 资金测算（复用 PB 分位情景点位，把跌幅换算成 1 手 IM 实际资金量）
+    cap = metrics.get("capital")
+    if cap:
+        lines.append("## 资金测算（1 手 IM）")
+        lines.append(_capital_panel(cap))
+        lines.append("")
 
     # 贴水覆盖性：PB 杀跌跌幅 × 下季贴水年限（跌幅来自 pb_compression）
     cov = metrics.get("discount_coverage")

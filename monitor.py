@@ -577,6 +577,61 @@ def _next_quarter_discount(contracts: list[dict]) -> float | None:
     return None
 
 
+# ─── 资金测算（IM 合约资金量）──────────────────────────────
+# 1 手 IM 名义价值 = 点位 × 200 元（合约乘数）；开仓保证金按 15% 估算
+# （中金所最低保证金标准，期货公司可能上浮，实际以开户公司为准）。
+# 每跌 1 点浮亏 200 元/手；任何下跌都会侵蚀保证金，需按浮亏准备补缴资金。
+IM_MULTIPLIER = 200      # IM 合约乘数：1 点 = 200 元
+IM_MARGIN_RATE = 0.15    # 保证金率（估算）
+
+
+def _compute_capital(
+    base_price: float, pb_rows: list[dict] | None, base_label: str = "现价",
+) -> dict | None:
+    """资金测算：1 手 IM 的名义价值 / 开仓保证金 / 下跌需补缴资金。
+
+    base_price：空仓取当前收盘（假设现价开仓），持仓取入场价。
+    - 名义价值 = base × 200；开仓保证金 = 名义 × 15%
+    - 保证金耗尽线 = base × (1-15%)：不加钱跌 15% 保证金亏光（强平风险）
+    - 补缴资金 = 浮亏全额（每跌 1 点 = 200 元）；实际追加保证金按当日
+      结算价计 ≈ 浮亏×85%（保证金占用随价格同步下降 15%），按全额备足更稳妥
+    - 情景复用 pb_compression（PB 分位情景点位），跌幅相对 base 重算，
+      只保留低于 base 的下跌情景
+    base_price<=0 或无下跌情景返回 None。
+    """
+    if base_price <= 0:
+        return None
+    notional = base_price * IM_MULTIPLIER
+    margin = notional * IM_MARGIN_RATE
+    scenarios = []
+    for r in pb_rows or []:
+        price = r.get("price") or 0
+        if price <= 0 or price >= base_price:
+            continue  # 只算相对 base 下跌的情景
+        loss = (base_price - price) * IM_MULTIPLIER
+        drop = (price - base_price) / base_price * 100
+        scenarios.append({
+            "tag": r.get("tag", ""),
+            "price": price,
+            "drop_pct": drop,
+            "loss_yuan": loss,
+        })
+    if not scenarios:
+        return None
+    # 建议总资金：保证金 + 扛 -1σ 的补缴（-1σ 为主判情景）
+    one_sigma = next((s for s in scenarios if "(-1σ)" in s["tag"]), None)
+    total = margin + one_sigma["loss_yuan"] if one_sigma else None
+    return {
+        "base_price": base_price,
+        "base_label": base_label,
+        "notional": notional,
+        "margin": margin,
+        "liq_price": base_price * (1 - IM_MARGIN_RATE),
+        "scenarios": scenarios,
+        "total_1sigma": total,
+    }
+
+
 def _compute_discount_coverage(
     contracts: list[dict], bottom_trend: dict | None,
     years: tuple = (1,),
@@ -611,8 +666,11 @@ def _compute_discount_coverage(
     }
 
 
-def _build_metrics(conn) -> dict:
-    """从 DB 拉数据，组装 metrics dict 供 signals/reporter 使用。"""
+def _build_metrics(conn, position: Position | None = None) -> dict:
+    """从 DB 拉数据，组装 metrics dict 供 signals/reporter 使用。
+
+    position 仅用于资金测算的基准价（持仓=入场价，否则=现价假设开仓）。
+    """
     latest = query_latest_valuation(conn)
     if latest is None:
         return {}
@@ -658,6 +716,15 @@ def _build_metrics(conn) -> dict:
     # 贴水覆盖性（持有 1 年的展期贴水 vs PB 杀跌跌幅，辅助决策）
     metrics["discount_coverage"] = _compute_discount_coverage(contracts, bottom_trend)
 
+    # 资金测算（1 手 IM：名义价值/保证金/下跌补缴，空仓按现价假设开仓，持仓按入场价）
+    base_price = close
+    base_label = "现价"
+    if position is not None and position.status == "holding" and position.entry_price:
+        base_price = position.entry_price
+        base_label = "入场价"
+    pb_rows = bottom_trend.get("pb_compression") if bottom_trend else None
+    metrics["capital"] = _compute_capital(base_price, pb_rows, base_label)
+
     # 预期收益三因子（ROE + 分红 + 估值变动；展期收益单独看 roll_yield）
     metrics["expected_return"] = _compute_expected_return(
         close, pe_ttm, pb, pe_median_10y)
@@ -681,7 +748,7 @@ def _generate_report() -> int:
     """读 DB → 评估信号 → 写 signals 表 + 生成 Markdown 报告。"""
     conn = init_db(DB_PATH)
     position = _load_position(conn)
-    metrics = _build_metrics(conn)
+    metrics = _build_metrics(conn, position)
     if not metrics:
         print("[ERR] DB 无数据，请先运行 run", file=sys.stderr)
         return 1
@@ -714,7 +781,7 @@ def _generate_report() -> int:
 def cmd_status() -> int:
     conn = init_db(DB_PATH)
     position = _load_position(conn)
-    metrics = _build_metrics(conn)
+    metrics = _build_metrics(conn, position)
     if not metrics:
         print("[ERR] DB 无数据，请先运行 run", file=sys.stderr)
         return 1

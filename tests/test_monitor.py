@@ -10,7 +10,7 @@ from unittest.mock import patch
 from monitor import (
     _extract_signal_metrics, _target_trade_date, _load_position,
     cmd_open, cmd_close, _compute_expected_return, _window_median,
-    _next_quarter_discount, _compute_discount_coverage,
+    _next_quarter_discount, _compute_discount_coverage, _compute_capital,
 )
 from db import init_db, load_position
 
@@ -176,6 +176,59 @@ class TestDiscountCoverage(unittest.TestCase):
         """pb_compression 无 σ 情景（如缺历史 PB）→ None"""
         self.assertIsNone(_compute_discount_coverage(
             [_contract("下季", 10.9, 150)], {"pb_compression": [{"tag": "当前"}]}))
+
+
+class TestComputeCapital(unittest.TestCase):
+    """资金测算：1 手 IM 名义价值 = 点位×200，保证金 15%，补缴 = 浮亏（每点 200 元）。"""
+
+    PB_ROWS = [
+        {"pb": 2.46, "price": 7770, "drop_pct": 0.0, "tag": "当前"},
+        {"pb": 2.59, "price": 8180, "drop_pct": 5.3, "tag": "PB 50%分位 (0σ)"},
+        {"pb": 2.04, "price": 6443, "drop_pct": -17.1, "tag": "PB 15.9%分位 (-1σ)"},
+        {"pb": 1.61, "price": 5085, "drop_pct": -34.6, "tag": "PB 1%分位 (-2σ)"},
+    ]
+
+    def test_nominal_margin_liq_price(self):
+        """名义价值 = 7770×200；保证金 = 15%；耗尽线 = 7770×85%"""
+        cap = _compute_capital(7770, self.PB_ROWS)
+        self.assertAlmostEqual(cap["notional"], 7770 * 200)
+        self.assertAlmostEqual(cap["margin"], 7770 * 200 * 0.15)
+        self.assertAlmostEqual(cap["liq_price"], 7770 * 0.85)
+
+    def test_scenario_loss_per_point_200(self):
+        """每跌 1 点浮亏 200 元：-1σ 6443 → (7770-6443)×200；跌幅相对 base"""
+        cap = _compute_capital(7770, self.PB_ROWS)
+        s1 = cap["scenarios"][0]
+        self.assertEqual(s1["tag"], "PB 15.9%分位 (-1σ)")
+        self.assertAlmostEqual(s1["loss_yuan"], (7770 - 6443) * 200)
+        self.assertAlmostEqual(s1["drop_pct"], (6443 - 7770) / 7770 * 100, places=1)
+
+    def test_rows_above_base_skipped(self):
+        """高于基准价的情景（当前/0σ 浮盈行）不列入补缴表"""
+        cap = _compute_capital(7770, self.PB_ROWS)
+        self.assertEqual([s["tag"] for s in cap["scenarios"]],
+                         ["PB 15.9%分位 (-1σ)", "PB 1%分位 (-2σ)"])
+
+    def test_total_1sigma_is_margin_plus_topup(self):
+        """建议总资金 = 保证金 + 扛 -1σ 补缴"""
+        cap = _compute_capital(7770, self.PB_ROWS)
+        expected = 7770 * 200 * 0.15 + (7770 - 6443) * 200
+        self.assertAlmostEqual(cap["total_1sigma"], expected)
+
+    def test_base_recomputes_drop_from_entry(self):
+        """持仓：base=入场价 7500 → 跌幅/补缴都相对入场价重算"""
+        cap = _compute_capital(7500, self.PB_ROWS, base_label="入场价")
+        s1 = cap["scenarios"][0]
+        self.assertEqual(cap["base_label"], "入场价")
+        self.assertAlmostEqual(s1["drop_pct"], (6443 - 7500) / 7500 * 100, places=1)
+        self.assertAlmostEqual(s1["loss_yuan"], (7500 - 6443) * 200)
+
+    def test_invalid_base_returns_none(self):
+        self.assertIsNone(_compute_capital(0, self.PB_ROWS))
+
+    def test_no_rows_returns_none(self):
+        self.assertIsNone(_compute_capital(7770, None))
+        self.assertIsNone(_compute_capital(7770, []))
 
 
 class TestTargetTradeDate(unittest.TestCase):

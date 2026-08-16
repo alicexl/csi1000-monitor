@@ -5,7 +5,7 @@ import unittest
 from signals import Signal, Position, Thresholds
 from reporter import (generate_report, render_status_line, format_signals_section,
                       _fmt_pct_window, _expected_return_panel, _discount_coverage_panel,
-                      _entry_check_panel, _exit_check_panel)
+                      _entry_check_panel, _exit_check_panel, _capital_panel)
 
 
 def make_position(status="empty"):
@@ -193,6 +193,53 @@ class TestDiscountCoveragePanel(unittest.TestCase):
         metrics["discount_coverage"] = self._cov()
         report = generate_report("2026-07-10", make_position(), metrics, [])
         self.assertIn("贴水覆盖性", report)
+
+
+class TestCapitalPanel(unittest.TestCase):
+    """资金测算 panel：名义价值/保证金 15%/下跌补缴资金渲染（万元口径）。"""
+
+    def _cap(self):
+        return {
+            "base_price": 7770,
+            "base_label": "现价",
+            "notional": 7770 * 200,
+            "margin": 7770 * 200 * 0.15,
+            "liq_price": 7770 * 0.85,
+            "scenarios": [
+                {"tag": "PB 15.9%分位 (-1σ)", "price": 6443, "drop_pct": -17.1,
+                 "loss_yuan": (7770 - 6443) * 200},
+                {"tag": "PB 1%分位 (-2σ)", "price": 5085, "drop_pct": -34.6,
+                 "loss_yuan": (7770 - 5085) * 200},
+            ],
+            "total_1sigma": 7770 * 200 * 0.15 + (7770 - 6443) * 200,
+        }
+
+    def test_panel_shows_margin_and_topup(self):
+        """155.4 万名义 / 23.3 万保证金 / 26.5 万补缴 / 建议总资金"""
+        out = _capital_panel(self._cap())
+        self.assertIn("155.4 万", out)    # 7770×200
+        self.assertIn("23.3 万", out)     # 保证金 15%
+        self.assertIn("26.5 万", out)     # -1σ 补缴 (7770-6443)×200
+        self.assertIn(f"{7770 * 0.85:.0f}", out)  # 保证金耗尽线
+        self.assertIn("建议总资金", out)
+        self.assertIn("每跌 1 点浮亏 200 元", out)
+
+    def test_no_scenarios_skips_table_keeps_margin(self):
+        """无下跌情景 → 无补缴表，但保证金/耗尽线仍展示"""
+        cap = self._cap()
+        cap["scenarios"] = []
+        cap["total_1sigma"] = None
+        out = _capital_panel(cap)
+        self.assertIn("23.3 万", out)
+        self.assertNotIn("需补缴", out)
+        self.assertNotIn("建议总资金", out)
+
+    def test_panel_in_full_report(self):
+        metrics = make_metrics()
+        metrics["capital"] = self._cap()
+        report = generate_report("2026-07-10", make_position(), metrics, [])
+        self.assertIn("资金测算", report)
+        self.assertIn("155.4 万", report)
 
 
 class TestEntryCheckPanel(unittest.TestCase):
