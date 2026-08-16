@@ -188,12 +188,11 @@ class TestComputeCapital(unittest.TestCase):
         {"pb": 1.61, "price": 5085, "drop_pct": -34.6, "tag": "PB 1%分位 (-2σ)"},
     ]
 
-    def test_nominal_margin_zero_price(self):
-        """名义价值 = 7770×200；保证金 = 15%；权益归零线 = 7770×85%"""
+    def test_nominal_and_margin(self):
+        """名义价值 = 7770×200；保证金 = 15%"""
         cap = _compute_capital(7770, self.PB_ROWS)
         self.assertAlmostEqual(cap["notional"], 7770 * 200)
         self.assertAlmostEqual(cap["margin"], 7770 * 200 * 0.15)
-        self.assertAlmostEqual(cap["zero_price"], 7770 * 0.85)
 
     def test_scenario_loss_per_point_200(self):
         """每跌 1 点浮亏 200 元：-1σ 6443 → (7770-6443)×200；跌幅相对 base"""

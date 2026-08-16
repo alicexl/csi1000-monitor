@@ -213,72 +213,66 @@ def _bottom_trend_panel(bt: dict) -> str:
     )
 
 
-def _pb_compression_panel(rows: list) -> str:
-    """PB 压缩空间 panel。
+def _pb_capital_panel(pb_rows: list, cap: dict | None) -> str:
+    """PB 分位情景点位 × 资金测算合并面板。
 
-    固定资产 B（=当前 BPS=close/pb），看不同 PB 分位情景对应的点位与跌幅。
-    回答交易者核心问题："资产已便宜，但估值还有多少杀跌空间"。
-    与 BPS 底部回归互补：BPS 看资产便宜不便宜，本面板看估值下行风险。
+    固定资产 B（=当前 BPS=close/pb）看 PB 分位情景点位与跌幅（估值杀跌空间），
+    同表附 1 手 IM 资金列（浮亏 + 补足至 100% 风险度需追加）——把估值情景直接
+    换算成资金量。cap 存在时先给名义价值/保证金两行 + 建议总资金；
+    cap 为 None（无下跌情景）时只出 PB 表。
+    资金口径：开仓即风险度 100%（权益 = 保证金占用，无下跌缓冲）；补足至
+    100% 需追加 = 浮亏×85%（新保证金占用随价格同步下降 15%）。
     """
-    lines = [
-        "| PB | 对应点位 | 跌幅 | 情景 |",
-        "|---|---|---|---|",
-    ]
-    for r in rows:
-        pb = r["pb"]
-        price = r["price"]
-        drop = r["drop_pct"]
-        tag = r.get("tag", "")
-        drop_str = f"{drop:+.0f}%" if drop != 0 else "—"
-        lines.append(f"| {pb:.2f} | {price:.0f} | {drop_str} | {tag} |")
-    return "\n".join(lines)
+    parts = []
+    label = "现价"
+    if cap:
+        b = cap["base_price"]
+        label = cap.get("base_label", "现价")
+        parts.append(
+            f"| 项目 | 金额 |\n"
+            f"|---|---|\n"
+            f"| 合约名义价值（1 手） | {cap['notional'] / 1e4:.1f} 万（{b:.0f} 点 × 200 元/点）|\n"
+            f"| 开仓保证金（15% 估算） | **{cap['margin'] / 1e4:.1f} 万**（开仓即风险度 100%，无下跌缓冲）|"
+        )
+        by_price = {s["price"]: s for s in cap["scenarios"]}
+    else:
+        by_price = {}
 
+    if pb_rows:
+        if cap:
+            header = ("| PB | 对应点位 | 跌幅 | 情景 | 浮亏（1 手）| 补足至 100% 需追加 |\n"
+                      "|---|---|---|---|---|---|")
+        else:
+            header = ("| PB | 对应点位 | 跌幅 | 情景 |\n"
+                      "|---|---|---|---|")
+        rows = []
+        for r in pb_rows:
+            drop = r.get("drop_pct", 0)
+            drop_str = f"{drop:+.0f}%" if drop != 0 else "—"
+            line = (f"| {r['pb']:.2f} | {r['price']:.0f} | {drop_str} "
+                    f"| {r.get('tag', '')} |")
+            if cap:
+                s = by_price.get(r["price"])
+                if s:
+                    line += f" {s['loss_yuan'] / 1e4:.1f} 万 | {s['topup_yuan'] / 1e4:.1f} 万 |"
+                else:
+                    line += " — | — |"
+            rows.append(line)
+        parts.append(header + "\n" + "\n".join(rows))
 
-def _capital_panel(cap: dict) -> str:
-    """资金测算 panel：1 手 IM 的名义价值 / 保证金（15%）/ 下跌补缴资金。
-
-    空仓以现价为基准（假设现价开仓），持仓以入场价为基准。开仓即风险度
-    100%（权益 = 保证金占用，无下跌缓冲），任何浮亏风险度就 >100% 触发追保；
-    补足至 100% 风险度需追加 = 浮亏×85%（新保证金占用随价格同步下降 15%）。
-    权益归零线 = 基准价×85%。
-    """
-    b = cap["base_price"]
-    label = cap.get("base_label", "现价")
-    lines = [
-        f"| 项目 | 金额 |",
-        f"|---|---|",
-        f"| 合约名义价值（1 手） | {cap['notional'] / 1e4:.1f} 万（{b:.0f} 点 × 200 元/点）|",
-        f"| 开仓保证金（15% 估算） | **{cap['margin'] / 1e4:.1f} 万**（开仓即风险度 100%，无下跌缓冲）|",
-        f"| 追保触发 | 价格低于{label}即触发（浮亏侵蚀保证金，风险度 >100%）|",
-        f"| 权益归零线 | {cap['zero_price']:.0f} 点（不加钱跌 15% 权益归零，再跌即穿仓）|",
-    ]
-    if cap["scenarios"]:
-        lines += [
-            "",
-            f"下跌资金缺口（自{label}，每跌 1 点浮亏 200 元/手）：",
-            "",
-            f"| 情景 | 点位 | 自{label}跌幅 | 浮亏（1 手）| 补足至 100% 风险度需追加 |",
-            f"|---|---|---|---|---|",
-        ]
-        for s in cap["scenarios"]:
-            lines.append(
-                f"| {s['tag']} | {s['price']:.0f} | {s['drop_pct']:.1f}% | "
-                f"{s['loss_yuan'] / 1e4:.1f} 万 | {s['topup_yuan'] / 1e4:.1f} 万 |")
-    if cap.get("total_1sigma"):
-        risk = cap.get("risk_1sigma_pct")
-        risk_str = (f"（备足后跌至 -1σ 风险度 ≈{risk:.0f}%，无需追加）"
-                    if risk else "")
-        lines += [
-            "",
-            f"**建议总资金（扛 -1σ 不再追加）**：保证金 + 浮亏 ≈ "
-            f"**{cap['total_1sigma'] / 1e4:.1f} 万**{risk_str}",
-        ]
-    lines += [
-        "",
-        "> 追加金额 = 浮亏×85%：追加后权益 = 新保证金占用，风险度恰好回 100%；"
-        "按浮亏全额备足则风险度压到 100% 以下。多手持仓按倍数放大。",
-    ]
-    return "\n".join(lines)
+    if cap:
+        if cap.get("total_1sigma"):
+            risk = cap.get("risk_1sigma_pct")
+            risk_str = (f"（备足后跌至 -1σ 风险度 ≈{risk:.0f}%，无需追加）"
+                        if risk else "")
+            parts.append(
+                f"**建议总资金（扛 -1σ 不再追加）**：保证金 + 浮亏 ≈ "
+                f"**{cap['total_1sigma'] / 1e4:.1f} 万**{risk_str}")
+        parts.append(
+            f"> 浮亏/追加按{label} {cap['base_price']:.0f} 点计（跌幅列自当前价）；"
+            f"追加 = 浮亏×85%（追加后权益 = 新保证金占用，风险度恰好回 100%），"
+            f"按浮亏全额备足则风险度压到 100% 以下。多手持仓按倍数放大。")
+    return "\n\n".join(parts)
 
 
 def _discount_coverage_panel(cov: dict) -> str:
@@ -422,20 +416,14 @@ def generate_report(
         lines.append(f"PE-PB 背离：{div:+.1f}pp（基本一致）")
     lines.append("")
 
-    # PB 分位情景点位（主体，可操作：跌幅驱动贴水覆盖判断；底部回归趋势图挪附录）
+    # PB 分位情景点位 × 资金测算合并（主体，可操作：跌幅驱动贴水覆盖判断；
+    # 资金列把 PB 情景直接换算成 1 手 IM 实际资金量；底部回归趋势图挪附录）
     bt = metrics.get("bottom_trend")
-    if bt:
-        pb_rows = bt.get("pb_compression")
-        if pb_rows:
-            lines.append("## PB 分位情景点位")
-            lines.append(_pb_compression_panel(pb_rows))
-            lines.append("")
-
-    # 资金测算（复用 PB 分位情景点位，把跌幅换算成 1 手 IM 实际资金量）
+    pb_rows = bt.get("pb_compression") if bt else None
     cap = metrics.get("capital")
-    if cap:
-        lines.append("## 资金测算（1 手 IM）")
-        lines.append(_capital_panel(cap))
+    if pb_rows or cap:
+        lines.append("## PB 分位情景点位 + 资金测算（1 手 IM）")
+        lines.append(_pb_capital_panel(pb_rows, cap))
         lines.append("")
 
     # 贴水覆盖性：PB 杀跌跌幅 × 下季贴水年限（跌幅来自 pb_compression）

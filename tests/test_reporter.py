@@ -5,7 +5,7 @@ import unittest
 from signals import Signal, Position, Thresholds
 from reporter import (generate_report, render_status_line, format_signals_section,
                       _fmt_pct_window, _expected_return_panel, _discount_coverage_panel,
-                      _entry_check_panel, _exit_check_panel, _capital_panel)
+                      _entry_check_panel, _exit_check_panel, _pb_capital_panel)
 
 
 def make_position(status="empty"):
@@ -195,8 +195,15 @@ class TestDiscountCoveragePanel(unittest.TestCase):
         self.assertIn("贴水覆盖性", report)
 
 
-class TestCapitalPanel(unittest.TestCase):
-    """资金测算 panel：名义价值/保证金 15%/下跌补缴资金渲染（万元口径）。"""
+class TestPbCapitalPanel(unittest.TestCase):
+    """PB 分位情景点位 × 资金测算合并面板：同表渲染资金列（万元口径）。"""
+
+    PB_ROWS = [
+        {"pb": 2.46, "price": 7770, "drop_pct": 0.0, "tag": "当前"},
+        {"pb": 2.59, "price": 8180, "drop_pct": 5.3, "tag": "PB 50%分位 (0σ)"},
+        {"pb": 2.04, "price": 6443, "drop_pct": -17.1, "tag": "PB 15.9%分位 (-1σ)"},
+        {"pb": 1.61, "price": 5085, "drop_pct": -34.6, "tag": "PB 1%分位 (-2σ)"},
+    ]
 
     def _cap(self):
         return {
@@ -204,7 +211,6 @@ class TestCapitalPanel(unittest.TestCase):
             "base_label": "现价",
             "notional": 7770 * 200,
             "margin": 7770 * 200 * 0.15,
-            "zero_price": 7770 * 0.85,
             "scenarios": [
                 {"tag": "PB 15.9%分位 (-1σ)", "price": 6443, "drop_pct": -17.1,
                  "loss_yuan": (7770 - 6443) * 200,
@@ -217,44 +223,39 @@ class TestCapitalPanel(unittest.TestCase):
             "risk_1sigma_pct": 6443 / 7770 * 100,
         }
 
-    def test_panel_shows_margin_loss_and_topup(self):
+    def test_merged_table_shows_capital_columns(self):
         """155.4 万名义 / 23.3 万保证金 / 26.5 万浮亏 / 22.6 万追加 / 建议总资金"""
-        out = _capital_panel(self._cap())
-        self.assertIn("155.4 万", out)    # 7770×200
-        self.assertIn("23.3 万", out)     # 保证金 15%
-        self.assertIn("26.5 万", out)     # -1σ 浮亏 (7770-6443)×200
-        self.assertIn("22.6 万", out)     # -1σ 追加 = 浮亏×85%
-        self.assertIn(f"{7770 * 0.85:.0f}", out)  # 权益归零线
-        self.assertIn("建议总资金", out)
-        self.assertIn("每跌 1 点浮亏 200 元", out)
-
-    def test_panel_shows_risk_mechanics(self):
-        """追保触发/权益归零线/风险度 100% 口径文案"""
-        out = _capital_panel(self._cap())
-        self.assertIn("追保触发", out)
-        self.assertIn("权益归零线", out)
+        out = _pb_capital_panel(self.PB_ROWS, self._cap())
+        self.assertIn("155.4 万", out)      # 名义价值 7770×200
+        self.assertIn("23.3 万", out)       # 保证金 15%
+        self.assertIn("26.5 万", out)       # -1σ 浮亏 (7770-6443)×200
+        self.assertIn("22.6 万", out)       # -1σ 追加 = 浮亏×85%
+        self.assertIn("浮亏（1 手）", out)
+        self.assertIn("补足至 100% 需追加", out)
         self.assertIn("开仓即风险度 100%", out)
-        self.assertIn("补足至 100% 风险度需追加", out)
-        self.assertIn("风险度恰好回 100%", out)
-        self.assertIn("≈83%", out)  # 备足后 -1σ 风险度 6443/7770
+        self.assertIn("建议总资金", out)
+        self.assertIn("≈83%", out)          # 备足后 -1σ 风险度 6443/7770
+        self.assertNotIn("追保触发", out)
+        self.assertNotIn("权益归零线", out)
 
-    def test_no_scenarios_skips_table_keeps_margin(self):
-        """无下跌情景 → 无资金缺口表，但保证金/权益归零线仍展示"""
-        cap = self._cap()
-        cap["scenarios"] = []
-        cap["total_1sigma"] = None
-        cap["risk_1sigma_pct"] = None
-        out = _capital_panel(cap)
-        self.assertIn("23.3 万", out)
-        self.assertIn("权益归零线", out)
-        self.assertNotIn("下跌资金缺口", out)
-        self.assertNotIn("建议总资金", out)
+    def test_above_base_rows_show_dash(self):
+        """当前/0σ 浮盈行资金列显示 —"""
+        out = _pb_capital_panel(self.PB_ROWS, self._cap())
+        self.assertIn("| 2.59 | 8180 | +5% | PB 50%分位 (0σ) | — | — |", out)
 
-    def test_panel_in_full_report(self):
+    def test_no_cap_falls_back_to_pb_only(self):
+        """cap=None（无下跌情景）→ 只出 PB 表，无资金列"""
+        out = _pb_capital_panel(self.PB_ROWS, None)
+        self.assertIn("PB 50%分位 (0σ)", out)
+        self.assertNotIn("浮亏", out)
+        self.assertNotIn("保证金", out)
+
+    def test_merged_panel_in_full_report(self):
+        """合并面板出现在报告里（合并渲染细节由单测覆盖）"""
         metrics = make_metrics()
         metrics["capital"] = self._cap()
         report = generate_report("2026-07-10", make_position(), metrics, [])
-        self.assertIn("资金测算", report)
+        self.assertIn("PB 分位情景点位 + 资金测算", report)
         self.assertIn("155.4 万", report)
 
 

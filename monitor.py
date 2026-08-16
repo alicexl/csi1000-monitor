@@ -594,7 +594,6 @@ def _compute_capital(
     - 名义价值 = base × 200；开仓保证金 = 名义 × 15%
     - 开仓即风险度 100%（权益 = 保证金占用，无下跌缓冲）：任何浮亏
       （价格低于 base）风险度就 >100%，触发追保
-    - 权益归零线 = base × (1-15%)：不加钱跌 15% 权益归零，再跌即穿仓
     - 每个下跌情景给两个数：浮亏（每跌 1 点 = 200 元）+ 补足至风险度
       100% 需追加 = 浮亏×85%（新保证金占用随价格同步下降 15%，追加后
       权益 = 新占用，风险度恰好回 100%）
@@ -631,7 +630,6 @@ def _compute_capital(
         "base_label": base_label,
         "notional": notional,
         "margin": margin,
-        "zero_price": base_price * (1 - IM_MARGIN_RATE),
         "scenarios": scenarios,
         "total_1sigma": total,
         "risk_1sigma_pct": (one_sigma["price"] / base_price * 100
