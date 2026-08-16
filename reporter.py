@@ -261,13 +261,13 @@ def _pb_capital_panel(pb_rows: list, cap: dict | None) -> str:
         parts.append(header + "\n" + "\n".join(rows))
 
     if cap:
-        if cap.get("total_1sigma"):
-            risk = cap.get("risk_1sigma_pct")
-            risk_str = (f"（备足后跌至 -1σ 风险度 ≈{risk:.0f}%，无需追加）"
+        if cap.get("total_extreme"):
+            risk = cap.get("risk_extreme_pct")
+            risk_str = (f"（备足后跌至极端情景风险度 ≈{risk:.0f}%，不触发强平）"
                         if risk else "")
             parts.append(
-                f"**建议总资金（扛 -1σ 不再追加）**：保证金 + 浮亏 ≈ "
-                f"**{cap['total_1sigma'] / 1e4:.1f} 万**{risk_str}")
+                f"**建议总资金（扛最极端 PB 1%分位情景，不被强平）**：保证金 + 浮亏 ≈ "
+                f"**{cap['total_extreme'] / 1e4:.1f} 万**{risk_str}")
         parts.append(
             f"> 浮亏/追加按{label} {cap['base_price']:.0f} 点计（跌幅列自当前价）；"
             f"追加 = 浮亏×85%（追加后权益 = 新保证金占用，风险度恰好回 100%），"

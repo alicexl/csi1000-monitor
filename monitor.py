@@ -621,19 +621,19 @@ def _compute_capital(
         })
     if not scenarios:
         return None
-    # 建议总资金：保证金 + 扛 -1σ 的浮亏（-1σ 为主判情景）。备足后跌至 -1σ：
-    # 权益 = 保证金（浮亏恰好吞掉缓冲），风险度 = 新占用/保证金 = p_1σ/base
-    one_sigma = next((s for s in scenarios if "(-1σ)" in s["tag"]), None)
-    total = margin + one_sigma["loss_yuan"] if one_sigma else None
+    # 建议总资金：保证金 + 扛最极端情景（PB 1%分位/-2σ，scenarios 按 PB 分位
+    # 升序排列，末位即最深跌幅）的浮亏——保证跌到极端情景也不破风险度 100%
+    # （不被强平）。备足后风险度 = 新占用/保证金 = p_extreme/base
+    extreme = scenarios[-1]
+    total = margin + extreme["loss_yuan"]
     return {
         "base_price": base_price,
         "base_label": base_label,
         "notional": notional,
         "margin": margin,
         "scenarios": scenarios,
-        "total_1sigma": total,
-        "risk_1sigma_pct": (one_sigma["price"] / base_price * 100
-                           if one_sigma else None),
+        "total_extreme": total,
+        "risk_extreme_pct": extreme["price"] / base_price * 100,
     }
 
 

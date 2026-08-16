@@ -219,8 +219,8 @@ class TestPbCapitalPanel(unittest.TestCase):
                  "loss_yuan": (7770 - 5085) * 200,
                  "topup_yuan": (7770 - 5085) * 200 * 0.85},
             ],
-            "total_1sigma": 7770 * 200 * 0.15 + (7770 - 6443) * 200,
-            "risk_1sigma_pct": 6443 / 7770 * 100,
+            "total_extreme": 7770 * 200 * 0.15 + (7770 - 5085) * 200,
+            "risk_extreme_pct": 5085 / 7770 * 100,
         }
 
     def test_merged_table_shows_capital_columns(self):
@@ -230,11 +230,14 @@ class TestPbCapitalPanel(unittest.TestCase):
         self.assertIn("23.3 万", out)       # 保证金 15%
         self.assertIn("26.5 万", out)       # -1σ 浮亏 (7770-6443)×200
         self.assertIn("22.6 万", out)       # -1σ 追加 = 浮亏×85%
+        self.assertIn("53.7 万", out)       # -2σ 浮亏 (7770-5085)×200
+        self.assertIn("77.0 万", out)       # 建议总资金 = 保证金 + -2σ 浮亏
         self.assertIn("浮亏（1 手）", out)
         self.assertIn("补足至 100% 需追加", out)
         self.assertIn("开仓即风险度 100%", out)
         self.assertIn("建议总资金", out)
-        self.assertIn("≈83%", out)          # 备足后 -1σ 风险度 6443/7770
+        self.assertIn("不被强平", out)
+        self.assertIn("≈65%", out)          # 备足后 -2σ 风险度 5085/7770
         self.assertNotIn("追保触发", out)
         self.assertNotIn("权益归零线", out)
 

@@ -220,13 +220,13 @@ class TestComputeCapital(unittest.TestCase):
         self.assertEqual([s["tag"] for s in cap["scenarios"]],
                          ["PB 15.9%分位 (-1σ)", "PB 1%分位 (-2σ)"])
 
-    def test_total_1sigma_is_margin_plus_loss(self):
-        """建议总资金 = 保证金 + 扛 -1σ 浮亏（备足后风险度 = 新占用/保证金）"""
+    def test_total_extreme_is_margin_plus_deepest_loss(self):
+        """建议总资金 = 保证金 + 最极端情景（-2σ，scenarios 末位）浮亏；
+        备足后风险度 = p_extreme/base < 100%（不被强平）"""
         cap = _compute_capital(7770, self.PB_ROWS)
-        expected = 7770 * 200 * 0.15 + (7770 - 6443) * 200
-        self.assertAlmostEqual(cap["total_1sigma"], expected)
-        # 备足后跌至 -1σ：权益 = 保证金，风险度 = 6443/7770 < 100%
-        self.assertAlmostEqual(cap["risk_1sigma_pct"], 6443 / 7770 * 100, places=1)
+        expected = 7770 * 200 * 0.15 + (7770 - 5085) * 200
+        self.assertAlmostEqual(cap["total_extreme"], expected)
+        self.assertAlmostEqual(cap["risk_extreme_pct"], 5085 / 7770 * 100, places=1)
 
     def test_base_recomputes_drop_from_entry(self):
         """持仓：base=入场价 7500 → 跌幅/补缴都相对入场价重算"""
