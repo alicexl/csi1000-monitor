@@ -430,12 +430,18 @@ def _resolve_trade_date(spot_close: float,
 def _extract_signal_metrics(metrics: dict) -> dict:
     """从 metrics 抽出 signals.evaluate 需要的指标 dict。
 
-    策略判断基于**展期收益 roll_yield = 展期一次收益率 = (当月价 − 下月价)/当月价**：
-    roll_yield > 0 表示价格 backwardation（下月比当月便宜），展期（卖近月买远月）能吃到价差。
+    策略判断基于**展期收益 roll_yield = 展期一次收益率 = (near价 − far价)/near价**：
+    roll_yield > 0 表示价格 backwardation（远月比近月便宜），展期（卖近月买远月）能吃到价差。
     用绝对价格判定，不用年化贴水斜率——远月天数长，即使年化贴水略低，绝对价格通常仍更低
-    （back），照样吃贴水；只有价格真正 contango（下月更贵）才失效。
+    （back），照样吃贴水；只有价格真正 contango（远月更贵）才失效。
     当月/下月年化贴水保留作展示参考（status_line/报告期货合约表）。
     days 用于 switch 信号（当月临交割时切月）。
+
+    交割周锚切（2026-10-12 拍板）：当月剩余 ≤ anchor_shift_days(3) 天时，锚整体上移一档
+    ——near=下月、far=梯子再下一张、q=梯子最远一张。依据：最后三天当月已不可新开、盘口收敛
+    波动大，当月锚读数没有执行意义；2/5/8/11 月「当季」槽位会被「下月」标签吞掉（分类先匹配
+    下月），梯子只有 3 张时 far 即下季、q 缺 → roll_q 保守 0。缺腿沿用保守回退
+    （roll=0 挡入场 / roll_q=0 不触发离场）。
     """
     contracts = metrics.get("contracts", [])
     cur_month = next(
@@ -446,19 +452,29 @@ def _extract_signal_metrics(metrics: dict) -> dict:
         (c for c in contracts if c["contract_type"] == "下季"), None)
     d_near = cur_month["annualized_discount"] if cur_month else 0
     d_far = next_month["annualized_discount"] if next_month else 0
-    # roll_yield = 展期一次收益率（当月→下月，价格 back 判定）：当月价 − 下月价 > 0 即 backwardation
-    near_price = cur_month["close"] if cur_month else 0
-    far_price = next_month["close"] if next_month else 0
-    if cur_month and next_month and near_price > 0:
+    # 按到期排序选锚位：正常 near=当月/far=下月/q=下季；锚切后整体上移一档
+    ladder = sorted(contracts, key=lambda c: c["days_to_expire"])
+    shifted = (cur_month is not None
+               and cur_month["days_to_expire"] <= THRESHOLDS.anchor_shift_days
+               and len(ladder) >= 2)
+    if shifted:
+        near, far = ladder[1], (ladder[2] if len(ladder) >= 3 else None)
+        q = ladder[3] if len(ladder) >= 4 else None
+    else:
+        near, far, q = cur_month, next_month, next_quarter
+    # roll_yield = 展期一次收益率（near→far，价格 back 判定）：near价 − far价 > 0 即 backwardation
+    near_price = near["close"] if near else 0
+    far_price = far["close"] if far else 0
+    if near and far and near_price > 0:
         roll_yield = (near_price - far_price) / near_price * 100
     else:
-        roll_yield = 0.0  # 缺当月/下月 → 无法展期，判 ≤0 异常
-    # roll_yield_q = 当月→下季展期段（离场双段判定用，与 roll_yield 同以当月价为锚）
-    quarter_price = next_quarter["close"] if next_quarter else 0
-    if cur_month and next_quarter and near_price > 0:
+        roll_yield = 0.0  # 缺腿 → 无法展期，判 ≤0 异常
+    # roll_yield_q = near→最远季月展期段（离场双段判定用，与 roll_yield 同锚）
+    quarter_price = q["close"] if q else 0
+    if near and q and near_price > 0:
         roll_yield_q = (near_price - quarter_price) / near_price * 100
     else:
-        roll_yield_q = 0.0  # 缺下季 → 保守 0（不触发 <0，不离场）
+        roll_yield_q = 0.0  # 缺远腿 → 保守 0（不触发 <0，不离场）
     return {
         "pe_ttm_pct_10y": metrics["pe_ttm_pct"].get("10y", {}).get("pct")
                           or 100,  # 样本不足（None）→ 100，保守 wait 不入场
@@ -468,6 +484,8 @@ def _extract_signal_metrics(metrics: dict) -> dict:
         "next_month_discount": d_far,
         "roll_yield": roll_yield,
         "roll_yield_q": roll_yield_q,
+        "roll_anchor_shifted": shifted,
+        "roll_legs": {"near": near, "far": far, "q": q},
     }
 
 
@@ -742,10 +760,13 @@ def _build_metrics(conn, position: Position | None = None) -> dict:
     except Exception:
         metrics["otm_call"] = None
 
-    # 展期收益 roll_yield（当月→下月）/roll_yield_q（当月→下季）供开仓/平仓检查面板共用
+    # 展期收益 roll_yield/roll_yield_q 供开仓/平仓检查面板共用
+    # （交割周当月剩余≤3天时锚切下月，roll_anchor_shifted/roll_legs 供展示层标注）
     _sig = _extract_signal_metrics(metrics)
     metrics["roll_yield"] = _sig["roll_yield"]
     metrics["roll_yield_q"] = _sig["roll_yield_q"]
+    metrics["roll_anchor_shifted"] = _sig["roll_anchor_shifted"]
+    metrics["roll_legs"] = _sig["roll_legs"]
     return metrics
 
 

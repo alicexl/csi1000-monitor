@@ -12,6 +12,9 @@ class Thresholds:
     reduce_pe_pct: float = 85
     warn_reduce_pe_pct: float = 75
     switch_days: int = 7
+    # 交割周展期锚切（2026-10-12 拍板）：当月剩余 ≤ 此天数时 roll 锚从当月切到下月
+    # ——最后三天当月不可新开、盘口收敛波动大，读当月锚没有执行意义
+    anchor_shift_days: int = 3
     # 贴水阈值统一为 0（客观定义：>0 有贴水，<=0 升水），不作为可调参数
     # 展期收益阈值也统一为 0（roll_yield > 0 = 价格 backwardation，展期能吃到价差）
 
@@ -61,7 +64,9 @@ def _entry_signal(metrics: dict, t: Thresholds) -> Signal | None:
             current={"pe_ttm_pct_10y": pe, "pb_pct_10y": pb, "roll_yield": roll},
             threshold={"entry_pe_pct": t.entry_pe_pct,
                        "entry_pb_pct": t.entry_pb_pct},
-            suggestion="买入 IM 当月合约入场（持有到交割后展期吃价差）",
+            suggestion=("买入 IM 下月合约入场（当月剩余≤3天不可新开，展期锚已切）"
+                        if metrics.get("roll_anchor_shifted")
+                        else "买入 IM 当月合约入场（持有到交割后展期吃价差）"),
         )
     return None
 

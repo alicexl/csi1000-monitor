@@ -97,7 +97,8 @@ def _entry_check_panel(metrics: dict) -> str:
         "|---|---|---|---|\n"
         f"| PE_TTM 10y 分位 | {pe_str} | <{t.entry_pe_pct:.0f}% | {'✅' if pe_ok else '✗'} |\n"
         f"| PB 10y 分位 | {pb_str} | <{t.entry_pb_pct:.0f}% | {'✅' if pb_ok else '✗'} |\n"
-        f"| 展期收益 | {roll:+.1f}% | >0 | {'✅' if roll_ok else '✗'} |\n"
+        f"| 展期收益{'（锚已切下月）' if metrics.get('roll_anchor_shifted') else ''} "
+        f"| {roll:+.1f}% | >0 | {'✅' if roll_ok else '✗'} |\n"
         f"\n**{verdict}**"
     )
 
@@ -111,10 +112,17 @@ def _exit_check_panel(metrics: dict) -> str:
     """
     t = Thresholds()
     pe = metrics["pe_ttm_pct"].get("10y", {}).get("pct")
-    roll = metrics.get("roll_yield", 0.0)      # 当月→下月
-    roll_q = metrics.get("roll_yield_q", 0.0)  # 当月→下季
-    contracts = {c["contract_type"]: c["close"] for c in metrics.get("contracts", [])}
-    cur, nxt, nq = contracts.get("当月"), contracts.get("下月"), contracts.get("下季")
+    roll = metrics.get("roll_yield", 0.0)      # near→far（交割周锚切后=下月→再下一张）
+    roll_q = metrics.get("roll_yield_q", 0.0)  # near→最远季月（同锚）
+    # 展期段两端合约（锚切后标签随梯子变，如 下月→当季）；旧 metrics 无 roll_legs 时按类型回退
+    legs = metrics.get("roll_legs") or {}
+    by_type = {c["contract_type"]: c["close"] for c in metrics.get("contracts", [])}
+    cur = legs["near"]["close"] if legs.get("near") else by_type.get("当月")
+    nxt = legs["far"]["close"] if legs.get("far") else by_type.get("下月")
+    nq = legs["q"]["close"] if legs.get("q") else by_type.get("下季")
+    cur_t = legs["near"]["contract_type"] if legs.get("near") else "当月"
+    far_t = legs["far"]["contract_type"] if legs.get("far") else "下月"
+    q_t = legs["q"]["contract_type"] if legs.get("q") else "下季"
 
     def _zone(v):
         if v is None:
@@ -142,14 +150,17 @@ def _exit_check_panel(metrics: dict) -> str:
     verdict = ("⚠️ 触发平仓信号（" + " + ".join(triggers) + "）" if triggers
                else "✅ 未触发平仓（继续持有）")
 
+    anchor_note = ("\n> ⚠ 当月剩余≤3天，展期锚已切至下月（当月不可新开，最后三日波动大）"
+                   if metrics.get("roll_anchor_shifted") else "")
     return (
         "| 条件 | 当前 | 门槛 | 触发 |\n"
         "|---|---|---|---|\n"
         f"| PE_TTM 10y 分位 | {pe_str} | >{t.reduce_pe_pct:.0f}% | {'✅' if pe_high else '✗'} |\n"
-        f"| 展期 当月→下月 | {seg(roll, cur, nxt)} | <0 | {'✅' if roll < 0 else '✗'} |\n"
-        f"| 展期 当月→下季 | {seg(roll_q, cur, nq)} | <0 | {'✅' if roll_q < 0 else '✗'} |\n"
+        f"| 展期 {cur_t}→{far_t} | {seg(roll, cur, nxt)} | <0 | {'✅' if roll < 0 else '✗'} |\n"
+        f"| 展期 {cur_t}→{q_t} | {seg(roll_q, cur, nq)} | <0 | {'✅' if roll_q < 0 else '✗'} |\n"
         f"\n**{verdict}**\n"
         f"> 展期需双段均<0（双段 contango）才算失效；单段 contango 视为噪音不离场"
+        + anchor_note
     )
 
 
@@ -436,6 +447,8 @@ def generate_report(
     # 期货合约（IM 当日市场数据）
     lines.append("## 期货合约（IM 当日）")
     lines.append(_contracts_table(metrics))
+    if metrics.get("roll_anchor_shifted"):
+        lines.append("\n> ⚠ 当月剩余≤3天，展期锚已切至下月（当月不可新开，最后三日波动大）")
     lines.append("")
 
     # 卖 Call 增厚分析（1σ OTM）— 持仓专属：备兑卖 call 需先持有 IM 多头
@@ -476,6 +489,7 @@ def render_status_line(
     pe_pct = metrics.get("pe_ttm_pct", {}).get("10y", {}).get("pct") or 0
     emoji = SIGNAL_EMOJI.get(signal_type, "")
 
+    anchor = "（锚:下月）" if metrics.get("roll_anchor_shifted") else ""
     return (f"{report_date} | {state_cn} | {close:.0f}点 | "
             f"PE_TTM {pe:.1f} ({pe_pct:.1f}%{emoji}) | "
-            f"展期 月{roll_yield:+.1f}%/季{roll_yield_q:+.1f}% | 信号: {signal_type}")
+            f"展期 月{roll_yield:+.1f}%/季{roll_yield_q:+.1f}%{anchor} | 信号: {signal_type}")

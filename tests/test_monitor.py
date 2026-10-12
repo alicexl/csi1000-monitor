@@ -113,6 +113,51 @@ class TestExtractSignalMetrics(unittest.TestCase):
         self.assertAlmostEqual(out["roll_yield"], 0)
         self.assertEqual(out["current_month_days"], 999)
 
+    def test_roll_anchor_shifts_at_3_days(self):
+        """交割周锚切（2026-10-12 拍板）：当月剩余≤3天 → 展期读数上移一档，
+        roll=(下月−当季)/下月、roll_q=(下月−下季)/下月，当月仅作 switch/d_near 用"""
+        self.metrics["contracts"] = [
+            _contract("当月", 5.0, 3, close=7030),
+            _contract("下月", 7.0, 39, close=6973),
+            _contract("当季", 8.0, 67, close=6921),
+            _contract("下季", 9.0, 158, close=6748),
+        ]
+        out = _extract_signal_metrics(self.metrics)
+        self.assertTrue(out["roll_anchor_shifted"])
+        # (6973 − 6921)/6973 = 0.745%（下月→当季段）
+        self.assertAlmostEqual(out["roll_yield"], (6973 - 6921) / 6973 * 100, places=2)
+        # (6973 − 6748)/6973 = 3.22%（下月→下季段）
+        self.assertAlmostEqual(out["roll_yield_q"], (6973 - 6748) / 6973 * 100, places=2)
+        # switch 信号仍按日历当月天数
+        self.assertEqual(out["current_month_days"], 3)
+
+    def test_roll_anchor_no_shift_at_4_days(self):
+        """当月剩余>3天 → 锚仍在当月（原口径不变）"""
+        self.metrics["contracts"] = [
+            _contract("当月", 5.0, 4, close=7030),
+            _contract("下月", 7.0, 39, close=6973),
+            _contract("当季", 8.0, 67, close=6921),
+        ]
+        out = _extract_signal_metrics(self.metrics)
+        self.assertFalse(out["roll_anchor_shifted"])
+        # (7030 − 6973)/7030 = 0.81%（当月→下月段）
+        self.assertAlmostEqual(out["roll_yield"], (7030 - 6973) / 7030 * 100, places=2)
+
+    def test_roll_anchor_shift_three_contract_month(self):
+        """2/5/8/11月「当季」槽被「下月」吞掉（梯子仅3张）：锚切后 far=下季、q 缺
+        → roll_q 保守 0（不触发离场）"""
+        self.metrics["contracts"] = [
+            _contract("当月", 5.0, 3, close=7030),
+            _contract("下月", 7.0, 39, close=6973),
+            _contract("下季", 9.0, 95, close=6748),
+        ]
+        out = _extract_signal_metrics(self.metrics)
+        self.assertTrue(out["roll_anchor_shifted"])
+        # (6973 − 6748)/6973 = 3.22%（下月→下季，far 兜到下季）
+        self.assertAlmostEqual(out["roll_yield"], (6973 - 6748) / 6973 * 100, places=2)
+        self.assertEqual(out["roll_yield_q"], 0.0)
+        self.assertIsNone(out["roll_legs"]["q"])
+
     def test_extracts_pb_for_entry(self):
         """_extract_signal_metrics 抽出 pb_pct_10y 供 entry 判断"""
         self.metrics["contracts"] = [_contract("当月", 5.0, 20),
