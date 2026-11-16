@@ -11,6 +11,7 @@ import akshare as ak
 
 # ─── 基差/贴水/合约分类（原 basis.py）─────────────────────────
 QUARTER_MONTHS = [3, 6, 9, 12]
+MO_MULTIPLIER = 100  # MO 股指期权合约乘数：1 点 = 100 元（IM 期货为 200）
 
 
 def compute_basis(futures_close: float, spot_close: float) -> float:
@@ -329,7 +330,7 @@ def fetch_otm_call(
         "atm_iv": atm_iv * 100,
         "otm_pct": otm,
         "premium_points": premium,
-        "premium_yuan": premium * 200,
+        "premium_yuan": premium * MO_MULTIPLIER,  # MO 期权乘数 100 元/点（IM 期货才是 200）
         "iv": iv * 100,
         "days_to_expire": days,
         "expire_date": expire.isoformat(),
