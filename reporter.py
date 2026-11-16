@@ -361,6 +361,9 @@ def _option_table(opt: dict) -> str:
         f"{opt['atm_iv']:.1f}% | **{opt['enhancement_nominal']:.1f}%** | "
         f"{opt['assign_prob']:.1f}% | {opt['breakeven']:.0f} | "
         f"{opt['oi']:.0f} |",
+        "",
+        "> 仅建议，默认不卖（策略待议）：历史 145 个月中月涨幅超 1σ OTM 距离 18 次（12.4%），"
+        "权利金与截断期望基本打平，且被截恰是估值回归兑现月。备兑配比 2 张 MO ≈ 1 手 IM 名义。",
     ]
     return "\n".join(lines)
 
