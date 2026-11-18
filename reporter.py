@@ -402,10 +402,18 @@ def generate_report(
         # 持仓盈亏紧跟信号检查（持仓时最关心当前浮盈）
         if position.entry_price:
             entry = position.entry_price
-            pnl_pct = (close - entry) / entry * 100
+            # 浮盈 = 入场价 vs 持仓合约现价（同合约口径，期货盈亏按合约价结算）；
+            # 合约不在当日梯子（过期/缺数据）才回退指数并显式标记
+            held = next((c["close"] for c in metrics.get("contracts", [])
+                         if c.get("symbol") == position.contract), None)
+            if held is not None:
+                cur_label, cur_price = f"合约 {held:.0f}", held
+            else:
+                cur_label, cur_price = f"指数 {close:.0f}（合约缺价）", close
+            pnl_pct = (cur_price - entry) / entry * 100
             lines.append("## 持仓盈亏")
-            lines.append(f"入场 {position.entry_date} @ {entry:.0f}，"
-                         f"当前 {close:.0f}，浮盈 {pnl_pct:+.1f}%")
+            lines.append(f"入场 {position.entry_date} {position.contract} @ {entry:.0f}，"
+                         f"{cur_label}，浮盈 {pnl_pct:+.1f}%")
             lines.append("")
 
     lines.append("## 估值面板")

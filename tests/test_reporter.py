@@ -82,6 +82,26 @@ class TestGenerateReport(unittest.TestCase):
         self.assertIn("IM2607", report)
         self.assertIn("7500", report)
 
+    def test_holding_pnl_uses_held_contract_price(self):
+        """持仓盈亏必须用持仓合约收盘价（IM2607=8150）对入场价，不能用指数 8198"""
+        pos = Position(status="holding", contract="IM2607",
+                       entry_date="2026-06-01", entry_price=7500.0)
+        metrics = make_metrics()
+        sigs = [Signal("hold", 5, "持有", {}, {}, "继续持有")]
+        report = generate_report("2026-07-10", pos, metrics, sigs)
+        self.assertIn("+8.7%", report)       # (8150-7500)/7500，合约口径
+        self.assertNotIn("+9.3%", report)    # (8198-7500)/7500，指数口径不得出现
+
+    def test_holding_pnl_falls_back_to_index_when_contract_missing(self):
+        """持仓合约不在当日梯子（过期/缺数据）→ 回退指数并显式标记"""
+        pos = Position(status="holding", contract="IM2606",
+                       entry_date="2026-05-01", entry_price=7500.0)
+        metrics = make_metrics()
+        sigs = [Signal("hold", 5, "持有", {}, {}, "继续持有")]
+        report = generate_report("2026-07-10", pos, metrics, sigs)
+        self.assertIn("+9.3%", report)       # 指数回退口径
+        self.assertIn("指数", report)        # 须显式标记非合约价
+
     def test_report_contains_pe_pb_divergence(self):
         pos = make_position()
         metrics = make_metrics()
