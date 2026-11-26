@@ -202,7 +202,7 @@ csi1000-monitor/
 | 空仓 | `wait` | 5 | 兜底（其他情况）|
 | 持仓 | `reduce` | 1 | PE>85% **或** 展期双段<0（当月→下月<0 **且** 当月→下季<0，双段 contango 才算失效；双触发都展示）|
 | 持仓 | `warn_reduce` | 4 | PE 75-85% |
-| 持仓 | `switch` | 3 | 当月剩余 <7 天，该换月 |
+| 持仓 | `switch` | 3 | 当月剩余 ≤3 天，该换月 |
 | 持仓 | `hold` | 5 | 兜底（继续持有；含近月 contango 但远月仍 back 的中间态）|
 
 **entry 三条件的逻辑**：PE/PB 分位管价格端（PE 看盈利、PB 看资产），roll_yield 管展期收益。三条件全满足才入场，任一不达标 fall through 到 warn_entry/wait。
@@ -245,7 +245,7 @@ csi1000-monitor/
 
 **仅建议参考，默认不卖**（2026-11-17 拍板，策略待议）：历史 145 个月中月涨幅超 1σ OTM 距离 18 次（12.4%），权利金与截断期望基本打平，且被截恰是估值回归兑现月。备兑配比 2 张 MO ≈ 1 手 IM 名义。
 
-持有 IM 多头时卖 **1σ OTM call** 收权利金增厚。行权价按 **ATM 隐含波动率**算 1 个标准差取：`target_strike = spot×(1+atm_iv×√T)`，再取期权链最近的 strike——IV 变化时 strike 自动伸缩，**行权概率始终标准化在 ~16%**（1σ 单尾）。
+持有 IM 多头时卖 **1σ OTM call** 收权利金增厚。MO 选月跟**持仓合约月份**（没切约前备兑对准所持月份）；空仓按日历当月、剩余 ≤3 天用下月。行权价按 **ATM 隐含波动率**算 1 个标准差取：`target_strike = spot×(1+atm_iv×√T)`，再取期权链最近的 strike——IV 变化时 strike 自动伸缩，**行权概率始终标准化在 ~16%**（1σ 单尾）。
 
 面板字段：执行价 / 实际≈σ / **ATM IV**（算 1σ 的基准，取最接近 spot 的有卖价 strike 反推）/ 权利金（点 + 元/张，乘数 100）/ 年化增厚（`(权利金/spot)×(365/天数)`，名义口径）/ 行权概率（`N(d2)`）/ 盈亏平衡 / 持仓量。
 
@@ -391,7 +391,7 @@ entry_pb_pct: float = 50        # 入场 PB 10y 分位上限
 warn_entry_pe_pct: float = 60   # 预警入场 PE 上限
 reduce_pe_pct: float = 85       # 平仓 PE 分位上限
 warn_reduce_pe_pct: float = 75  # 预警平仓上限
-switch_days: int = 7            # 合约切换阈值（剩余天数）
+switch_days: int = 3            # 合约切换阈值（当月剩余 ≤3 天切下月，与锚切同口径）
 ```
 
 `monitor.py` 顶部常量：

@@ -196,19 +196,25 @@ class TestHoldingState(unittest.TestCase):
         self.assertIn("warn_reduce", types)
 
     def test_switch_signal(self):
-        """当月剩余天数 <7 → switch"""
-        sigs = evaluate(HOLDING, make_metrics(pe_pct=50, days=5), self.t)
+        """当月剩余天数 ≤3 → switch"""
+        sigs = evaluate(HOLDING, make_metrics(pe_pct=50, days=2), self.t)
         types = [s.type for s in sigs]
         self.assertIn("switch", types)
 
-    def test_switch_boundary_strict_lt(self):
-        """剩余天数=7（严格 <7）不触发"""
-        sigs = evaluate(HOLDING, make_metrics(pe_pct=50, days=7), self.t)
+    def test_switch_boundary_inclusive(self):
+        """剩余天数=3（含边界 ≤3）触发"""
+        sigs = evaluate(HOLDING, make_metrics(pe_pct=50, days=3), self.t)
+        types = [s.type for s in sigs]
+        self.assertIn("switch", types)
+
+    def test_switch_boundary_exclusive(self):
+        """剩余天数=4（>3）不触发"""
+        sigs = evaluate(HOLDING, make_metrics(pe_pct=50, days=4), self.t)
         types = [s.type for s in sigs]
         self.assertNotIn("switch", types)
 
     def test_hold_signal(self):
-        """PE<=75 且 天数>=7 且 价格 back → hold"""
+        """PE<=75 且 天数>3 且 价格 back → hold"""
         sigs = evaluate(HOLDING, make_metrics(pe_pct=50, days=20), self.t)
         types = [s.type for s in sigs]
         self.assertIn("hold", types)
@@ -229,7 +235,7 @@ class TestHoldingState(unittest.TestCase):
         self.assertNotIn("reduce", types)
 
     def test_reduce_pe_and_switch_can_coexist(self):
-        """PE>85 且 天数<7 → reduce + switch 同时触发"""
+        """PE>85 且 天数≤3 → reduce + switch 同时触发"""
         sigs = evaluate(HOLDING, make_metrics(pe_pct=90, days=3), self.t)
         types = [s.type for s in sigs]
         self.assertIn("reduce", types)

@@ -256,10 +256,19 @@ def fetch_daily_contracts(today: date, spot_close: float) -> list[dict]:
     return rows
 
 
-def _pick_option_month(today: date, switch_days: int = 7) -> tuple[str, date]:
-    """选卖 call 用的期权合约月份。当月剩余 < switch_days 时用下月。"""
+def _pick_option_month(
+    today: date, switch_days: int = 3, anchor_symbol: str | None = None
+) -> tuple[str, date]:
+    """选卖 call 用的期权合约月份。
+
+    anchor_symbol 给了（如持仓合约 IM2612）→ 直接用该月份（持仓没切约前，备兑跟着持仓走）；
+    否则按日历：当月剩余 ≤ switch_days 时用下月（与切约信号同口径）。
+    """
+    if anchor_symbol:
+        yy, mm = 2000 + int(anchor_symbol[2:4]), int(anchor_symbol[4:6])
+        return f"MO{anchor_symbol[2:]}", third_friday(yy, mm)
     expire_cur = third_friday(today.year, today.month)
-    if (expire_cur - today).days >= switch_days:
+    if (expire_cur - today).days > switch_days:
         mo_sym = f"MO{today.year % 100:02d}{today.month:02d}"
         return mo_sym, expire_cur
     yy, mm = today.year, today.month
@@ -273,7 +282,8 @@ def _pick_option_month(today: date, switch_days: int = 7) -> tuple[str, date]:
 
 
 def fetch_otm_call(
-    spot: float, today: date, sigma_mult: float = 1.0, switch_days: int = 7
+    spot: float, today: date, sigma_mult: float = 1.0, switch_days: int = 3,
+    anchor_symbol: str | None = None
 ) -> dict | None:
     """拉当月/下月中证1000股指期权 → 按 ATM IV 算 Nσ OTM 选 call → 算 IV/增厚率/行权概率。
 
@@ -283,7 +293,7 @@ def fetch_otm_call(
 
     返回 None 表示拉取失败（周末/网络/接口异常/缺 ATM 卖价），不阻断主流程。
     """
-    mo_symbol, expire = _pick_option_month(today, switch_days)
+    mo_symbol, expire = _pick_option_month(today, switch_days, anchor_symbol)
     df = retry(lambda: ak.option_cffex_zz1000_spot_sina(symbol=mo_symbol), retries=2)
     if df is None or df.empty:
         return None

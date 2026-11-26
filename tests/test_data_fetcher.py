@@ -8,6 +8,7 @@ import pandas as pd
 from data_fetcher import (
     retry, fetch_valuation,
     fetch_daily_contracts, build_valuation_row,
+    _pick_option_month,
 )
 
 
@@ -93,6 +94,28 @@ class TestFetchDailyContracts(unittest.TestCase):
         self.assertIn("IM2607", symbols)
         self.assertIn("IM2608", symbols)
         self.assertNotIn("IF2607", symbols)
+
+
+class TestPickOptionMonth(unittest.TestCase):
+    """纯日期逻辑：卖 call 选月。锚=持仓合约优先，否则日历（当月剩余≤3 用下月）。"""
+
+    def test_anchor_overrides_calendar(self):
+        """持仓 IM2612 时，即使日历当月是 11 月（剩4天>3 本应选 MO2611），仍选 MO2612"""
+        mo, expire = _pick_option_month(date(2026, 11, 16), 3, "IM2612")
+        self.assertEqual(mo, "MO2612")
+        self.assertEqual(expire, date(2026, 12, 18))
+
+    def test_calendar_current_month_when_far_from_expiry(self):
+        """无锚 + 当月剩余 4 天 >3 → 用当月"""
+        mo, expire = _pick_option_month(date(2026, 11, 16), 3)
+        self.assertEqual(mo, "MO2611")
+        self.assertEqual(expire, date(2026, 11, 20))
+
+    def test_calendar_next_month_near_expiry(self):
+        """无锚 + 当月剩余 2 天 ≤3 → 用下月"""
+        mo, expire = _pick_option_month(date(2026, 11, 18), 3)
+        self.assertEqual(mo, "MO2612")
+        self.assertEqual(expire, date(2026, 12, 18))
 
 
 if __name__ == "__main__":

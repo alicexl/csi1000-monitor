@@ -11,7 +11,9 @@ class Thresholds:
     warn_entry_pe_pct: float = 60
     reduce_pe_pct: float = 85
     warn_reduce_pe_pct: float = 75
-    switch_days: int = 7
+    # 切约/卖call选月与锚切同口径（2026-11-26 拍板）：当月剩余 ≤3 天才切下月
+    # （7 天太早，当月流动性尚可；最后三天当月不可新开、盘口收敛波动大）
+    switch_days: int = 3
     # 交割周展期锚切（2026-10-12 拍板）：当月剩余 ≤ 此天数时 roll 锚从当月切到下月
     # ——最后三天当月不可新开、盘口收敛波动大，读当月锚没有执行意义
     anchor_shift_days: int = 3
@@ -194,10 +196,10 @@ def _warn_reduce_signal(metrics: dict, t: Thresholds) -> Signal | None:
 
 def _switch_signal(metrics: dict, t: Thresholds) -> Signal | None:
     days = metrics["current_month_days"]
-    if days < t.switch_days:
+    if days <= t.switch_days:
         return Signal(
             type="switch", priority=3,
-            condition=f"当月合约剩余 {days} 天 < {t.switch_days} 天",
+            condition=f"当月合约剩余 {days} 天 ≤ {t.switch_days} 天",
             current={"days_to_expire": days},
             threshold={"switch_days": t.switch_days},
             suggestion="考虑平当月、开下月",
@@ -211,12 +213,12 @@ def _hold_signal(metrics: dict, t: Thresholds) -> Signal | None:
     roll = metrics["roll_yield"]
     roll_q = metrics["roll_yield_q"]
     basis_failed = roll < 0 and roll_q < 0  # 双段 contango = 离场条件，hold 的否定
-    if (pe <= t.warn_reduce_pe_pct and days >= t.switch_days
+    if (pe <= t.warn_reduce_pe_pct and days > t.switch_days
             and not basis_failed):
         return Signal(
             type="hold", priority=5,
             condition=(f"PE_TTM {pe:.1f}% ≤ {t.warn_reduce_pe_pct}% 且 "
-                       f"剩余 {days} 天 ≥ {t.switch_days} 且 "
+                       f"剩余 {days} 天 > {t.switch_days} 且 "
                        f"展期未双段失效（月{roll:+.1f}%/季{roll_q:+.1f}%）"),
             current={"pe_ttm_pct_10y": pe, "days_to_expire": days,
                      "roll_yield": roll, "roll_yield_q": roll_q},

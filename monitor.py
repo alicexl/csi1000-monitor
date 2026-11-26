@@ -692,7 +692,8 @@ def _compute_discount_coverage(
 def _build_metrics(conn, position: Position | None = None) -> dict:
     """从 DB 拉数据，组装 metrics dict 供 signals/reporter 使用。
 
-    position 仅用于资金测算的基准价（持仓=入场价，否则=现价假设开仓）。
+    position 用于资金测算的基准价（持仓=入场价，否则=现价假设开仓）
+    和卖 call 选月锚（持仓 → MO 跟持仓合约月份）。
     """
     latest = query_latest_valuation(conn)
     if latest is None:
@@ -752,11 +753,14 @@ def _build_metrics(conn, position: Position | None = None) -> dict:
     metrics["expected_return"] = _compute_expected_return(
         close, pe_ttm, pb, pe_median_10y)
 
-    # 期权增厚分析（实时拉取，失败不阻断）
+    # 期权增厚分析（实时拉取，失败不阻断）；选月跟持仓合约（没切约前备兑对准所持月份）
     try:
         metrics["otm_call"] = fetch_otm_call(
             close, date.today(), sigma_mult=1.0,
-            switch_days=THRESHOLDS.switch_days)
+            switch_days=THRESHOLDS.switch_days,
+            anchor_symbol=(position.contract
+                           if position is not None and position.status == "holding"
+                           else None))
     except Exception:
         metrics["otm_call"] = None
 
